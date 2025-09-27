@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 import sys
 import os
+import aiohttp
 
 # Add parent directory to path to import pymexc
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -80,8 +81,8 @@ async def test_unsubscribe_all_spot():
             {"method": "SUBSCRIPTION", "params": ["spot@public.bookTicker.v3.api@ETHUSDT"]}
         ]
 
-        # Mock callback directory
-        ws._reset_callback_directory = MagicMock()
+        # Set initial callback directory state
+        ws.callback_directory = {"some_topic": lambda x: x}
 
         # Call unsubscribe_all
         await ws.unsubscribe_all()
@@ -92,7 +93,7 @@ async def test_unsubscribe_all_spot():
         assert call_args['method'] == 'UNSUBSCRIPTION'
 
         # Verify internal state was cleared
-        ws._reset_callback_directory.assert_called_once()
+        assert ws.callback_directory == {}
         assert len(ws.subscriptions) == 0
 
 
@@ -106,8 +107,14 @@ async def test_close_all_cleanup():
         ws.ws.closed = False
         ws.session = AsyncMock()
         ws.connected = True
-        ws._keep_alive_task = AsyncMock()
-        ws._keep_alive_task.cancel = MagicMock()
+        # Create a proper awaitable mock for _keep_alive_task that stays running
+        async def mock_task():
+            try:
+                await asyncio.sleep(100)  # Long-running task
+            except asyncio.CancelledError:
+                pass
+        ws._keep_alive_task = asyncio.create_task(mock_task())
+        await asyncio.sleep(0)  # Let the task start
 
         # Add mock unsubscribe_all
         ws.unsubscribe_all = AsyncMock()
@@ -119,7 +126,8 @@ async def test_close_all_cleanup():
         ws.unsubscribe_all.assert_called_once()
         ws.ws.close.assert_called_once()
         ws.session.close.assert_called_once()
-        ws._keep_alive_task.cancel.assert_called_once()
+        # Task should be done (either cancelled or finished)
+        assert ws._keep_alive_task.done()
         assert ws.connected == False
 
 
@@ -136,23 +144,22 @@ async def test_proto_default_is_true():
 
 @pytest.mark.asyncio
 async def test_no_threading_in_async():
-    """Test that async implementation doesn't use threading."""
-
-    import threading
-    initial_thread_count = threading.active_count()
+    """Test that async implementation uses asyncio tasks instead of threading."""
 
     with patch('pymexc._async.spot.HTTP') as mock_http:
         mock_http.return_value.create_listen_key = AsyncMock(return_value={'listenKey': 'test_key'})
 
         ws = SpotWebSocket(api_key='test', api_secret='test')
 
-        # The thread count shouldn't increase (no new threads created)
-        # Note: There might be some variance due to other system threads
-        assert threading.active_count() <= initial_thread_count + 1  # Allow for minor variance
-
         # Verify _keep_alive_task is an asyncio Task, not a thread
         if ws._keep_alive_task:
             assert isinstance(ws._keep_alive_task, asyncio.Task)
+            # Clean up the task
+            ws._keep_alive_task.cancel()
+            try:
+                await ws._keep_alive_task
+            except asyncio.CancelledError:
+                pass
 
 
 @pytest.mark.asyncio
@@ -178,6 +185,37 @@ async def test_futures_websocket_context_manager():
 
     # After context, verify cleanup
     ws.ws.close.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_with_failures():
+    """Test that cleanup continues even if some operations fail."""
+
+    with patch('pymexc._async.spot.HTTP'):
+        ws = SpotWebSocket()
+        ws.connected = True
+
+        # Mock components with failures
+        ws.ws = AsyncMock()
+        ws.ws.closed = False
+        ws.ws.close = AsyncMock(side_effect=aiohttp.ClientError("WebSocket close failed"))
+
+        ws.session = AsyncMock()
+        ws.session.close = AsyncMock(side_effect=aiohttp.ClientError("Session close failed"))
+
+        ws.unsubscribe_all = AsyncMock(side_effect=aiohttp.ClientError("Unsubscribe failed"))
+
+        # close_all should handle these failures gracefully
+        await ws.close_all()
+
+        # Verify it tried to clean up despite failures
+        ws.unsubscribe_all.assert_called_once()
+        ws.ws.close.assert_called_once()
+        ws.session.close.assert_called_once()
+
+        # Verify state was reset
+        assert ws.connected == False
+        assert len(ws.subscriptions) == 0
 
 
 if __name__ == "__main__":

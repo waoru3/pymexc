@@ -195,7 +195,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
         """
         Async context manager exit - ensures proper cleanup.
         """
-        # Unsubscribe from all topics
+        # Unsubscribe from all topics if the method exists (defined in subclasses)
         if hasattr(self, 'unsubscribe_all'):
             await self.unsubscribe_all()
         
@@ -204,7 +204,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
             await self.ws.close()
         
         # Close the session
-        if hasattr(self, 'session') and self.session:
+        if self.session:
             await self.session.close()
         
         # Cancel any background tasks
@@ -230,22 +230,24 @@ class _AsyncWebSocketManager(_WebSocketManager):
         if hasattr(self, 'unsubscribe_all'):
             try:
                 await self.unsubscribe_all()
-            except Exception as e:
-                logger.debug(f"Error during unsubscribe_all: {e}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.debug(f"Network error during unsubscribe_all: {e}")
+            except asyncio.CancelledError:
+                pass  # Task was cancelled, that's OK
         
         # Close websocket
-        if hasattr(self, 'ws') and self.ws and not self.ws.closed:
+        if self.ws and not self.ws.closed:
             try:
                 await self.ws.close()
-            except Exception as e:
-                logger.debug(f"Error closing websocket: {e}")
-        
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.debug(f"Network error closing websocket: {e}")
+
         # Close session
-        if hasattr(self, 'session') and self.session:
+        if self.session:
             try:
                 await self.session.close()
-            except Exception as e:
-                logger.debug(f"Error closing session: {e}")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.debug(f"Network error closing session: {e}")
         
         # Cancel background tasks
         if hasattr(self, '_keep_alive_task') and self._keep_alive_task:
@@ -253,14 +255,12 @@ class _AsyncWebSocketManager(_WebSocketManager):
             try:
                 await self._keep_alive_task
             except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.debug(f"Error canceling keep-alive task: {e}")
+                pass  # Expected when cancelling a task
         
         # Reset state
         self.connected = False
         self.subscriptions = []
-        self._reset_callback_directory() if hasattr(self, '_reset_callback_directory') else None
+        self.callback_directory = {}
         
         logger.debug(f"WebSocket {self.ws_name if hasattr(self, 'ws_name') else ''} closed and cleaned up")
 
@@ -343,8 +343,8 @@ class _FuturesWebSocketManager(_AsyncWebSocketManager):
             await self.unsubscribe(topic)
         
         # Clear all subscriptions and callbacks
-        self.subscriptions.clear() if hasattr(self.subscriptions, 'clear') else self.subscriptions.clear()
-        self._reset_callback_directory()
+        self.subscriptions.clear()
+        self.callback_directory = {}
         
         logger.debug(f"Unsubscribed from all topics")
 
@@ -521,8 +521,8 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
             })
         
         # Clear all subscriptions and callbacks
-        self.subscriptions.clear() if hasattr(self.subscriptions, 'clear') else self.subscriptions.clear()
-        self._reset_callback_directory()
+        self.subscriptions.clear()
+        self.callback_directory = {}
         
         logger.debug(f"Unsubscribed from all topics")
 
