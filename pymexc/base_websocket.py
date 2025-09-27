@@ -432,7 +432,7 @@ class _WebSocketManager:
                     if "o" in message or "orderId" in message or "orderStatus" in message:
                         topic = "private.orders"
                     # Check for deal/trade fields  
-                    elif "t" in message or "tradeId" in message or "price" in message and "quantity" in message:
+                    elif "t" in message or "tradeId" in message or ("price" in message and "quantity" in message):
                         topic = "private.deals"
                     # Default to account updates
                     else:

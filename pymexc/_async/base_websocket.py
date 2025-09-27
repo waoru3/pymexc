@@ -435,7 +435,7 @@ class _SpotWebSocket(_SpotWebSocketManager):
             if not hasattr(self, 'listenKey') or not self.listenKey:
                 # Wait a bit for _keep_alive_loop to generate the listenKey
                 import asyncio
-                for _ in range(10):  # Try for up to 5 seconds
+                for _ in range(10):  # Try for up to 5 seconds (10 * 0.5s)
                     await asyncio.sleep(0.5)
                     if hasattr(self, 'listenKey') and self.listenKey:
                         break
