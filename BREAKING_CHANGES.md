@@ -26,18 +26,27 @@ ws = SpotWebSocket(api_key="key", api_secret="secret")  # proto=True by default
 **Reason for Change:**
 The protobuf protocol (`proto=True`) provides better performance and is the recommended way to use MEXC WebSocket API. Making it the default reduces configuration errors and improves out-of-the-box performance.
 
-### Context Manager Support Added
+### Context Manager Support Added (Optional)
 
-WebSocket classes now support async context manager protocol for automatic resource cleanup.
+WebSocket classes now support async context manager protocol for automatic resource cleanup. **This is optional** - you can still use the classes directly.
 
-**New Usage Pattern:**
+**Option 1: Direct Usage (traditional)**
+```python
+ws = SpotWebSocket(api_key="key", api_secret="secret")
+await ws.connect()
+await ws.depth_stream(callback, "BTCUSDT")
+# Manual cleanup when done
+await ws.close_all()
+```
+
+**Option 2: Context Manager (automatic cleanup)**
 ```python
 async with SpotWebSocket(api_key="key", api_secret="secret") as ws:
     await ws.depth_stream(callback, "BTCUSDT")
     # WebSocket automatically cleaned up on exit
 ```
 
-This is not a breaking change but a new feature that ensures proper resource management.
+This is not a breaking change but a new **optional** feature that ensures proper resource management when used.
 
 ### Migration Guide
 

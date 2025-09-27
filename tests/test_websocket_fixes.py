@@ -188,6 +188,35 @@ async def test_futures_websocket_context_manager():
 
 
 @pytest.mark.asyncio
+async def test_direct_usage_without_context_manager():
+    """Test that WebSocket can be used directly without context manager."""
+
+    with patch('pymexc._async.spot.HTTP') as mock_http:
+        mock_http.return_value.create_listen_key = AsyncMock(return_value={'listenKey': 'test_key'})
+
+        # Direct usage without context manager
+        ws = SpotWebSocket(api_key='test', api_secret='test')
+
+        # Mock the connection components
+        ws.ws = AsyncMock()
+        ws.ws.closed = False
+        ws.session = AsyncMock()
+        ws.connected = True
+
+        # Should be able to use it normally
+        assert ws is not None
+        assert ws.proto == True  # Check default
+
+        # Manual cleanup should work
+        await ws.close_all()
+
+        # Verify cleanup happened
+        ws.ws.close.assert_called_once()
+        ws.session.close.assert_called_once()
+        assert ws.connected == False
+
+
+@pytest.mark.asyncio
 async def test_cleanup_with_failures():
     """Test that cleanup continues even if some operations fail."""
 
