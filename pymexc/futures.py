@@ -1445,7 +1445,7 @@ class WebSocket(_FuturesWebSocket):
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         personal_callback: Optional[Callable[..., None]] = None,
-        ping_interval: Optional[int] = 20,
+        ping_interval: Optional[int] = 55,
         ping_timeout: Optional[int] = 10,
         retries: Optional[int] = 10,
         restart_on_error: Optional[bool] = True,

@@ -37,7 +37,7 @@ class _WebSocketManager:
         api_key=None,
         api_secret=None,
         subscribe_callback=None,
-        ping_interval=20,
+        ping_interval=55,
         ping_timeout=10,
         retries=10,
         restart_on_error=True,
@@ -120,7 +120,7 @@ class _WebSocketManager:
         # Handle None case for private streams
         if topic is None:
             return None
-        
+
         return (
             topic.replace("sub.", "")
             .replace("push.", "")
@@ -314,21 +314,22 @@ class _WebSocketManager:
 
     def _on_pong(self):
         """
-        Sends a custom ping upon the receipt of the pong frame.
+        Handle pong frames from the websocket server.
 
-        The websocket library will automatically send ping frames. However, to
-        ensure the connection to Bybit stays open, we need to send a custom
-        ping message separately from this. When we receive the response to the
-        ping frame, this method is called, and we will send the custom ping as
-        a normal OPCODE_TEXT message and not an OPCODE_PING.
+        Note: Custom application-level pings are sent on a timer-based schedule,
+        not triggered by pong responses. This is just to acknowledge pong frames.
         """
-        self._send_custom_ping()
+        logger.warning(f"MEXC futures requires continuous application-level ping messages sent at regular intervals, not triggered by pong responses.")
 
     def _send_custom_ping(self):
         try:
             self.ws.send(self.custom_ping_message)
+            # Reschedule next ping to send continuously
+            self.ping_timer = threading.Timer(self.ping_interval, self._send_custom_ping)
+            self.ping_timer.start()
         except websocket._exceptions.WebSocketConnectionClosedException as e:
-            self.ping_timer.cancel()
+            if self.ping_timer:
+                self.ping_timer.cancel()
             self._on_error(e)
 
     def _send_initial_ping(self):
@@ -420,12 +421,12 @@ class _WebSocketManager:
         """
         if isinstance(message, dict):
             channel = message.get("channel") or message.get("c")
-            
+
             # Special handling for private messages that might not have channel field
             if channel is None:
                 # Log the message structure for debugging
                 logger.debug(f"Message without channel - keys: {list(message.keys())[:10]}")
-                
+
                 # Check for MEXC private message patterns
                 # Private messages might use different field names
                 if "s" in message:  # Symbol field often indicates private message
@@ -433,13 +434,13 @@ class _WebSocketManager:
                     # Check for order-related fields
                     if "o" in message or "orderId" in message or "orderStatus" in message:
                         topic = "private.orders"
-                    # Check for deal/trade fields  
+                    # Check for deal/trade fields
                     elif "t" in message or "tradeId" in message or ("price" in message and "quantity" in message):
                         topic = "private.deals"
                     # Default to account updates
                     else:
                         topic = "private.account"
-                        
+
                     logger.debug(f"Routed private message to {topic} based on content")
                 else:
                     # No channel and no recognizable pattern
@@ -447,7 +448,7 @@ class _WebSocketManager:
                     logger.debug(f"Could not determine topic for message: {str(message)[:200]}")
             else:
                 topic = self._topic(channel)
-                
+
             callback_data = message
         else:
             topic = self._topic(message.channel)
@@ -613,7 +614,7 @@ class _SpotWebSocketManager(_WebSocketManager):
             "method": "SUBSCRIPTION",
             "params": [
                 "@".join(
-                    [f"spot@{topic}.v3.api" + (".pb" if self.proto else "")] 
+                    [f"spot@{topic}.v3.api" + (".pb" if self.proto else "")]
                     + ([str(interval)] if interval else [])
                     + list(map(str, params.values()))
                 )
