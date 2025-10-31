@@ -174,7 +174,15 @@ class _AsyncWebSocketManager(_WebSocketManager):
         await self.ws.send_json(msg)
 
     async def _on_error(self, error: Exception):
-        super()._on_error(error, parse_only=True)
+        try:
+            super()._on_error(error, parse_only=True)
+        except Exception as exc:
+            if isinstance(error, (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError)) and exc is error:
+                logger.debug(
+                    "Network error handled during async websocket operation: %s", error,
+                )
+            else:
+                raise
 
         # Reconnect.
         if self.restart_on_error and not self.attempting_connection:
@@ -207,15 +215,15 @@ class _AsyncWebSocketManager(_WebSocketManager):
         # Unsubscribe from all topics if the method exists (defined in subclasses)
         if hasattr(self, 'unsubscribe_all'):
             await self.unsubscribe_all()
-        
+
         # Close the websocket connection
         if self.ws and not self.ws.closed:
             await self.ws.close()
-        
+
         # Close the session
         if self.session:
             await self.session.close()
-        
+
         # Cancel any background tasks
         if hasattr(self, '_keep_alive_task') and self._keep_alive_task:
             self._keep_alive_task.cancel()
@@ -223,10 +231,10 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 await self._keep_alive_task
             except asyncio.CancelledError:
                 pass
-        
+
         # Mark as disconnected
         self.connected = False
-        
+
         return False  # Don't suppress exceptions
 
     async def close_all(self):
@@ -243,7 +251,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 logger.debug(f"Network error during unsubscribe_all: {e}")
             except asyncio.CancelledError:
                 pass  # Task was cancelled, that's OK
-        
+
         # Close websocket
         if self.ws and not self.ws.closed:
             try:
@@ -257,7 +265,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 await self.session.close()
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 logger.debug(f"Network error closing session: {e}")
-        
+
         # Cancel background tasks
         if hasattr(self, '_keep_alive_task') and self._keep_alive_task:
             self._keep_alive_task.cancel()
@@ -270,7 +278,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
         self.connected = False
         self.subscriptions = []
         self.callback_directory = {}
-        
+
         logger.debug(f"WebSocket {self.ws_name if hasattr(self, 'ws_name') else ''} closed and cleaned up")
 
     async def _process_normal_message(self, message: dict):
@@ -316,7 +324,8 @@ class _AsyncWebSocketManager(_WebSocketManager):
         try:
             await self.ws.send_str(self.custom_ping_message)
         except (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError) as exc:
-            logger.debug(f"Ping failed: {exc}")
+            logger.warning(f"Ping failed: {exc}. Triggering reconnection.")
+            await self._on_error(exc)
 
 
 # # # # # # # # # #
@@ -376,22 +385,22 @@ class _FuturesWebSocketManager(_AsyncWebSocketManager):
         """
         if not self.subscriptions:
             return
-        
+
         # Get all topics from subscriptions
         topics_to_unsub = []
         for sub in self.subscriptions:
             if sub.get("method", "").startswith("sub."):
                 topic = sub["method"].replace("sub.", "")
                 topics_to_unsub.append(topic)
-        
+
         # Unsubscribe from all topics
         for topic in topics_to_unsub:
             await self.unsubscribe(topic)
-        
+
         # Clear all subscriptions and callbacks
         self.subscriptions.clear()
         self.callback_directory = {}
-        
+
         logger.debug(f"Unsubscribed from all topics")
 
     async def _process_auth_message(self, message: dict):
@@ -487,7 +496,7 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
             "method": "SUBSCRIPTION",
             "params": [
                 "@".join(
-                    [f"spot@{topic}.v3.api" + (".pb" if self.proto else "")] 
+                    [f"spot@{topic}.v3.api" + (".pb" if self.proto else "")]
                     + ([str(interval)] if interval else [])
                     + list(map(str, params.values()))
                 )
@@ -552,24 +561,24 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
         """
         if not self.subscriptions:
             return
-        
+
         # Collect all params from subscriptions
         all_params = []
         for sub in self.subscriptions:
             if sub.get("params"):
                 all_params.extend(sub["params"])
-        
+
         # Send unsubscribe message for all
         if all_params:
             await self.ws.send_json({
                 "method": "UNSUBSCRIPTION",
                 "params": all_params
             })
-        
+
         # Clear all subscriptions and callbacks
         self.subscriptions.clear()
         self.callback_directory = {}
-        
+
         logger.debug(f"Unsubscribed from all topics")
 
     async def _handle_incoming_message(self, message):
@@ -620,7 +629,7 @@ class _SpotWebSocket(_SpotWebSocketManager):
                 else:
                     # If still no listenKey, we have a problem
                     raise Exception("Failed to generate listenKey for private streams. Check API credentials.")
-        
+
         if not self.is_connected():
             await self._connect(self.endpoint)
 
