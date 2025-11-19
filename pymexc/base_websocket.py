@@ -8,6 +8,8 @@ from typing import Callable, Dict, List, Union
 import websocket
 
 from pymexc.proto import ProtoTyping, PublicSpotKlineV3Api, PushDataV3ApiWrapper
+from google.protobuf.json_format import MessageToDict
+from google.protobuf.message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -385,7 +387,7 @@ class _WebSocketManager:
 
     def get_proto_body(self, message: ProtoTyping.PushDataV3ApiWrapper) -> dict:
         if self.extend_proto_body:
-            return message
+            return self._convert_proto_to_dict(message)
 
         topic = self._topic(message.channel)
         bodies = {
@@ -407,11 +409,24 @@ class _WebSocketManager:
         }
 
         if topic in bodies:
-            return getattr(message, bodies[topic])  # default=message
+            return self._convert_proto_to_dict(getattr(message, bodies[topic]))  # default=message
 
         else:
             logger.warning(f"Body for topic {topic} not found. | Message: {message.__dict__}")
-            return message
+            return self._convert_proto_to_dict(message)
+
+    def _convert_proto_to_dict(self, message):
+        """
+        Helper to convert Protobuf message to dict using MessageToDict.
+        Preserves field names (camelCase) as defined in .proto files.
+        """
+        if isinstance(message, Message):
+            try:
+                return MessageToDict(message, preserving_proto_field_name=True)
+            except Exception as e:
+                logger.error(f"Failed to convert protobuf message to dict: {e}")
+                return message
+        return message
 
     def _process_normal_message(self, message: dict | ProtoTyping.PushDataV3ApiWrapper, parse_only: bool = False):
         """
