@@ -644,6 +644,20 @@ class HTTP(_SpotHTTP):
         """
         return self.call("GET", "api/v3/kyc/status")
 
+    def get_uid(self) -> dict:
+        """
+        ### Query UID
+        #### Required permission: SPOT_ACCOUNT_READ
+
+        Weight(IP): 1
+
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#query-uid
+
+        :return: response dictionary
+        :rtype: dict
+        """
+        return self.call("GET", "api/v3/uid")
+
     def get_default_symbols(self) -> dict:
         """
         ### User API default symbol.
@@ -667,13 +681,14 @@ class HTTP(_SpotHTTP):
         symbol: str,
         side: str,
         order_type: str,
-        quantity: Optional[int] = None,
-        quote_order_qty: Optional[int] = None,
-        price: Optional[int] = None,
+        quantity: Optional[str] = None,
+        quote_order_qty: Optional[str] = None,
+        price: Optional[str] = None,
         new_client_order_id: Optional[str] = None,
-        stop_price: Optional[int] = None,
-        iceberg_qty: Optional[int] = None,
+        stop_price: Optional[str] = None,
+        iceberg_qty: Optional[str] = None,
         time_in_force: Optional[str] = None,
+        stp_mode: Optional[str] = None,
     ) -> dict:
         """
         ### Test New Order.
@@ -681,7 +696,7 @@ class HTTP(_SpotHTTP):
 
         Weight(IP): 1, Weight(UID): 1
 
-        https://mexcdevelop.github.io/apidocs/spot_v3_en/#test-new-order
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#test-new-order
 
         :param symbol: Trading pair
         :type symbol: str
@@ -690,19 +705,21 @@ class HTTP(_SpotHTTP):
         :param order_type: Order type (LIMIT/MARKET)
         :type order_type: str
         :param quantity: Order quantity
-        :type quantity: Optional[int]
+        :type quantity: Optional[str]
         :param quote_order_qty: Quote order quantity
-        :type quote_order_qty: Optional[int]
+        :type quote_order_qty: Optional[str]
         :param price: Order price
-        :type price: Optional[int]
+        :type price: Optional[str]
         :param new_client_order_id: Client order ID
         :type new_client_order_id: Optional[str]
         :param stop_price: Stop price
-        :type stop_price: Optional[int]
+        :type stop_price: Optional[str]
         :param iceberg_qty: Iceberg quantity
-        :type iceberg_qty: Optional[int]
+        :type iceberg_qty: Optional[str]
         :param time_in_force: Time in force
         :type time_in_force: Optional[str]
+        :param stp_mode: STP mode
+        :type stp_mode: Optional[str]
 
         :return: Empty dict if successful
         :rtype: dict
@@ -717,7 +734,7 @@ class HTTP(_SpotHTTP):
 
         return self.call(
             "POST",
-            "/api/v3/order/test",
+            "api/v3/order/test",
             params=dict(
                 symbol=symbol,
                 side=side,
@@ -729,6 +746,7 @@ class HTTP(_SpotHTTP):
                 stopPrice=stop_price,
                 icebergQty=iceberg_qty,
                 timeInForce=time_in_force,
+                stpMode=stp_mode,
             ),
         )
 
@@ -741,13 +759,14 @@ class HTTP(_SpotHTTP):
         symbol: str,
         side: str,
         order_type: str,
-        quantity: Optional[int] = None,
-        quote_order_qty: Optional[int] = None,
-        price: Optional[int] = None,
+        quantity: Optional[str] = None,
+        quote_order_qty: Optional[str] = None,
+        price: Optional[str] = None,
         new_client_order_id: Optional[str] = None,
-        stop_price: Optional[int] = None,
-        iceberg_qty: Optional[int] = None,
+        stop_price: Optional[str] = None,
+        iceberg_qty: Optional[str] = None,
         time_in_force: Optional[str] = None,
+        stp_mode: Optional[str] = None,
     ) -> dict:
         """
         ### New Order.
@@ -755,7 +774,7 @@ class HTTP(_SpotHTTP):
 
         Weight(IP): 1, Weight(UID): 1
 
-        https://mexcdevelop.github.io/apidocs/spot_v3_en/#new-order
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#new-order
 
         :param symbol: Trading pair
         :type symbol: str
@@ -764,19 +783,21 @@ class HTTP(_SpotHTTP):
         :param order_type: Order type (LIMIT/MARKET)
         :type order_type: str
         :param quantity: Order quantity
-        :type quantity: Optional[int]
+        :type quantity: Optional[str]
         :param quote_order_qty: Quote order quantity
-        :type quote_order_qty: Optional[int]
+        :type quote_order_qty: Optional[str]
         :param price: Order price
-        :type price: Optional[int]
+        :type price: Optional[str]
         :param new_client_order_id: Client order ID
         :type new_client_order_id: Optional[str]
         :param stop_price: Stop price
-        :type stop_price: Optional[int]
+        :type stop_price: Optional[str]
         :param iceberg_qty: Iceberg quantity
-        :type iceberg_qty: Optional[int]
+        :type iceberg_qty: Optional[str]
         :param time_in_force: Time in force
         :type time_in_force: Optional[str]
+        :param stp_mode: STP mode
+        :type stp_mode: Optional[str]
 
         :return: Order response dictionary
         :rtype: dict
@@ -803,6 +824,7 @@ class HTTP(_SpotHTTP):
                 stopPrice=stop_price,
                 icebergQty=iceberg_qty,
                 timeInForce=time_in_force,
+                stpMode=stp_mode,
             ),
         )
 
@@ -816,6 +838,7 @@ class HTTP(_SpotHTTP):
         quote_order_qty: Optional[float] = None,
         price: Optional[float] = None,
         new_client_order_id: Optional[str] = None,
+        stp_mode: Optional[str] = None,
     ) -> list:
         """
         ### Batch Orders.
@@ -825,7 +848,7 @@ class HTTP(_SpotHTTP):
 
         Supports 20 orders with a same symbol in a batch, rate limit: 2 times/s.
 
-        https://mexcdevelop.github.io/apidocs/spot_v3_en/#batch-orders
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#batch-orders
 
         :param batch_orders: list of batchOrders, supports max 20 orders
         :type batch_orders: List[dict]
@@ -843,18 +866,12 @@ class HTTP(_SpotHTTP):
         :type price: Optional[float]
         :param new_client_order_id: ClientOrderId
         :type new_client_order_id: Optional[str]
+        :param stp_mode: STP mode
+        :type stp_mode: Optional[str]
 
         :return: list of order responses
         :rtype: list
         """
-        # Validate required parameters based on order type
-        if order_type == "LIMIT":
-            if not quantity or not price:
-                raise ValueError("LIMIT orders require both quantity and price")
-        elif order_type == "MARKET":
-            if not quantity and not quote_order_qty:
-                raise ValueError("MARKET orders require either quantity or quoteOrderQty")
-
         # Prepare batch orders
         orders = []
         for order in batch_orders:
@@ -872,6 +889,8 @@ class HTTP(_SpotHTTP):
                 order_data["price"] = str(price)
             if new_client_order_id:
                 order_data["newClientOrderId"] = new_client_order_id
+            if stp_mode:
+                order_data["stpMode"] = stp_mode
 
             # Add any additional fields from the batch order
             order_data.update(order)
@@ -967,22 +986,27 @@ class HTTP(_SpotHTTP):
             params=dict(symbol=symbol, origClientOrderId=orig_client_order_id, orderId=order_id),
         )
 
-    def current_open_orders(self, symbol: str) -> dict:
+    def current_open_orders(self, symbol: Optional[str] = None) -> Union[dict, list]:
         """
         ### Current Open Orders.
         #### Required permission: SPOT_DEAL_READ
 
         Weight(IP): 3
 
-        https://mexcdevelop.github.io/apidocs/spot_v3_en/#current-open-orders
+        Get all open orders on a symbol. Careful when accessing this with no symbol.
 
-        :param symbol:
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#current-open-orders
+
+        :param symbol: (optional) symbol
         :type symbol: str
 
-        :return: response dictionary
-        :rtype: dict
+        :return: response dictionary or list
+        :rtype: Union[dict, list]
         """
-        return self.call("GET", "api/v3/openOrders", params=dict(symbol=symbol))
+        params = {}
+        if symbol:
+            params["symbol"] = symbol
+        return self.call("GET", "api/v3/openOrders", params=params)
 
     def all_orders(
         self,
@@ -1934,6 +1958,98 @@ class HTTP(_SpotHTTP):
                 type=type,
             ),
         )
+
+    def create_stp_strategy_group(self, trade_group_name: str) -> dict:
+        """
+        ### Create STP strategy group
+        #### Required permission: SPOT_ACCOUNT_WRITE
+
+        Weight(IP): 20
+
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#create-stp-strategy-group
+
+        :param trade_group_name: stp strategy group name
+        :type trade_group_name: str
+
+        :return: response dictionary
+        :rtype: dict
+        """
+        return self.call("POST", "api/v3/strategy/group", params={"tradeGroupName": trade_group_name})
+
+    def get_stp_strategy_group(self, trade_group_name: Optional[str] = None) -> dict:
+        """
+        ### Query STP strategy group
+        #### Required permission: SPOT_ACCOUNT_READ
+
+        Weight(IP): 20
+
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#query-stp-strategy-group
+
+        :param trade_group_name: stp strategy group name
+        :type trade_group_name: Optional[str]
+
+        :return: response dictionary
+        :rtype: dict
+        """
+        params = {}
+        if trade_group_name:
+            params["tradeGroupName"] = trade_group_name
+        return self.call("GET", "api/v3/strategy/group", params=params)
+
+    def delete_stp_strategy_group(self, trade_group_id: str) -> dict:
+        """
+        ### Delete STP strategy group
+        #### Required permission: SPOT_ACCOUNT_WRITE
+
+        Weight(IP): 20
+
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#delete-stp-strategy-group
+
+        :param trade_group_id: stp strategy group id
+        :type trade_group_id: str
+
+        :return: response dictionary
+        :rtype: dict
+        """
+        return self.call("DELETE", "api/v3/strategy/group", params={"tradeGroupId": trade_group_id})
+
+    def add_uid_to_stp_strategy_group(self, trade_group_id: str, uid: str) -> dict:
+        """
+        ### Add uid to STP strategy group
+        #### Required permission: SPOT_ACCOUNT_WRITE
+
+        Weight(IP): 20
+
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#add-uid-to-stp-strategy-group
+
+        :param trade_group_id: stp strategy group id
+        :type trade_group_id: str
+        :param uid: separated by ,
+        :type uid: str
+
+        :return: response dictionary
+        :rtype: dict
+        """
+        return self.call("POST", "api/v3/strategy/group/uid", params={"tradeGroupId": trade_group_id, "uid": uid})
+
+    def delete_uid_from_stp_strategy_group(self, trade_group_id: str, uid: str) -> dict:
+        """
+        ### Delete uid to STP strategy group
+        #### Required permission: SPOT_ACCOUNT_WRITE
+
+        Weight(IP): 20
+
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#delete-uid-to-stp-strategy-group
+
+        :param trade_group_id: stp strategy group id
+        :type trade_group_id: str
+        :param uid: separated by ,
+        :type uid: str
+
+        :return: response dictionary
+        :rtype: dict
+        """
+        return self.call("DELETE", "api/v3/strategy/group/uid", params={"tradeGroupId": trade_group_id, "uid": uid})
 
 
 class WebSocket(_SpotWebSocket):
