@@ -821,9 +821,9 @@ class HTTP(_SpotHTTP):
         symbol: str,
         side: Literal["BUY", "SELL"],
         order_type: Literal["LIMIT", "MARKET", "LIMIT_MARKET", "IMMEDIATE_OR_CANCEL", "FILL_OR_KILL"],
-        quantity: Optional[float] = None,
-        quote_order_qty: Optional[float] = None,
-        price: Optional[float] = None,
+        quantity: Optional[str] = None,
+        quote_order_qty: Optional[str] = None,
+        price: Optional[str] = None,
         new_client_order_id: Optional[str] = None,
         stp_mode: Optional[str] = None,
     ) -> list:
@@ -846,11 +846,11 @@ class HTTP(_SpotHTTP):
         :param order_type: order type
         :type order_type: Literal["LIMIT", "MARKET", "LIMIT_MARKET", "IMMEDIATE_OR_CANCEL", "FILL_OR_KILL"]
         :param quantity: quantity (required for LIMIT and MARKET orders)
-        :type quantity: Optional[float]
+        :type quantity: Optional[str]
         :param quote_order_qty: quoteOrderQty (required for MARKET orders if quantity not provided)
-        :type quote_order_qty: Optional[float]
+        :type quote_order_qty: Optional[str]
         :param price: order price (required for LIMIT orders)
-        :type price: Optional[float]
+        :type price: Optional[str]
         :param new_client_order_id: ClientOrderId
         :type new_client_order_id: Optional[str]
         :param stp_mode: STP mode
@@ -869,11 +869,11 @@ class HTTP(_SpotHTTP):
             }
 
             if quantity:
-                order_data["quantity"] = str(quantity)
+                order_data["quantity"] = quantity
             if quote_order_qty:
-                order_data["quoteOrderQty"] = str(quote_order_qty)
+                order_data["quoteOrderQty"] = quote_order_qty
             if price:
-                order_data["price"] = str(price)
+                order_data["price"] = price
             if new_client_order_id:
                 order_data["newClientOrderId"] = new_client_order_id
             if stp_mode:
@@ -1063,9 +1063,9 @@ class HTTP(_SpotHTTP):
         Get trades for a specific account and symbol,
         Only the transaction records in the past 1 month can be queried.
         If you want to view more transaction records, please use the export function on the web side,
-        which supports exporting transaction records of the past 3 years at most.
+        which supports exporting transaction records of the past 540 days at most.
 
-        https://mexcdevelop.github.io/apidocs/spot_v3_en/#account-trade-list
+        https://www.mexc.com/api-docs/spot-v3/spot-account-trade#account-trade-list
 
         :param symbol:
         :type symbol: str
@@ -1075,7 +1075,7 @@ class HTTP(_SpotHTTP):
         :type start_time: int
         :param end_time: (optional)
         :type end_time: int
-        :param limit: (optional) Default 500; max 1000;
+        :param limit: (optional) Default 100; max 100;
         :type limit: int
 
         :return: response dictionary
@@ -1981,7 +1981,7 @@ class HTTP(_SpotHTTP):
         """
         return await self.call("POST", "api/v3/strategy/group", params={"tradeGroupName": trade_group_name})
 
-    async def get_stp_strategy_group(self, trade_group_name: Optional[str] = None) -> dict:
+    async def get_stp_strategy_group(self, trade_group_name: str) -> dict:
         """
         ### Query STP strategy group
         #### Required permission: SPOT_ACCOUNT_READ
@@ -1991,15 +1991,12 @@ class HTTP(_SpotHTTP):
         https://www.mexc.com/api-docs/spot-v3/spot-account-trade#query-stp-strategy-group
 
         :param trade_group_name: stp strategy group name
-        :type trade_group_name: Optional[str]
+        :type trade_group_name: str
 
         :return: response dictionary
         :rtype: dict
         """
-        params = {}
-        if trade_group_name:
-            params["tradeGroupName"] = trade_group_name
-        return await self.call("GET", "api/v3/strategy/group", params=params)
+        return await self.call("GET", "api/v3/strategy/group", params={"tradeGroupName": trade_group_name})
 
     async def delete_stp_strategy_group(self, trade_group_id: str) -> dict:
         """
