@@ -75,21 +75,40 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 "ping_timeout is deprecated for async websockets, please use just ping_interval.",
             )
 
+    def exit(self):
+        """
+        Closes the websocket connection in an async-safe way.
+        """
+        self._cancel_ping_timer()
+        self.exited = True
+        self.connected = False
+        
+        if self.ws and not self.ws.closed:
+            # Fire and forget close since we can't await in sync method
+            self.loop.create_task(self.ws.close())
+
     async def _on_open(self):
         self.connected = True
         super()._on_open()
 
     async def _loop_recv(self):
+        ws = self.ws
+        session = self.session
         try:
-            async for msg in self.ws:
+            async for msg in ws:
                 if msg.type in [aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY]:
                     await self._on_message(msg.data)
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     await self._on_error(msg)
                     break
+        except Exception as e:
+            await self._on_error(e)
         finally:
-            await self._on_close()
-            await self.session.close()
+            if self.ws is ws:
+                await self._on_close()
+            
+            if session and not session.closed:
+                await session.close()
 
     async def _on_message(self, message: str | bytes):
         """
