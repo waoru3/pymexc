@@ -653,12 +653,12 @@ class HTTP(_SpotHTTP):
         symbol: str,
         side: str,
         order_type: str,
-        quantity: Optional[int] = None,
-        quote_order_qty: Optional[int] = None,
-        price: Optional[int] = None,
+        quantity: Optional[float] = None,
+        quote_order_qty: Optional[float] = None,
+        price: Optional[float] = None,
         new_client_order_id: Optional[str] = None,
-        stop_price: Optional[int] = None,
-        iceberg_qty: Optional[int] = None,
+        stop_price: Optional[float] = None,
+        iceberg_qty: Optional[float] = None,
         time_in_force: Optional[str] = None,
     ) -> dict:
         """
@@ -676,17 +676,17 @@ class HTTP(_SpotHTTP):
         :param order_type: Order type (LIMIT/MARKET)
         :type order_type: str
         :param quantity: Order quantity
-        :type quantity: Optional[int]
+        :type quantity: Optional[float]
         :param quote_order_qty: Quote order quantity
-        :type quote_order_qty: Optional[int]
+        :type quote_order_qty: Optional[float]
         :param price: Order price
-        :type price: Optional[int]
+        :type price: Optional[float]
         :param new_client_order_id: Client order ID
         :type new_client_order_id: Optional[str]
         :param stop_price: Stop price
-        :type stop_price: Optional[int]
+        :type stop_price: Optional[float]
         :param iceberg_qty: Iceberg quantity
-        :type iceberg_qty: Optional[int]
+        :type iceberg_qty: Optional[float]
         :param time_in_force: Time in force
         :type time_in_force: Optional[str]
 
@@ -727,39 +727,12 @@ class HTTP(_SpotHTTP):
         symbol: str,
         side: str,
         order_type: str,
-        quantity: Optional[int] = None,
-        quote_order_qty: Optional[int] = None,
-        price: Optional[int] = None,
+        quantity: Optional[float] = None,
+        quote_order_qty: Optional[float] = None,
+        price: Optional[float] = None,
         new_client_order_id: Optional[str] = None,
-        stop_price: Optional[int] = None,
-        iceberg_qty: Optional[int] = None,
-        time_in_force: Optional[str] = None,
-    ) -> dict:
-        warnings.warn("new_order is deprecated, use order instead", DeprecationWarning)
-        return await self.order(
-            symbol=symbol,
-            side=side,
-            order_type=order_type,
-            quantity=quantity,
-            quote_order_qty=quote_order_qty,
-            price=price,
-            new_client_order_id=new_client_order_id,
-            stop_price=stop_price,
-            iceberg_qty=iceberg_qty,
-            time_in_force=time_in_force,
-        )
-
-    async def order(
-        self,
-        symbol: str,
-        side: str,
-        order_type: str,
-        quantity: Optional[int] = None,
-        quote_order_qty: Optional[int] = None,
-        price: Optional[int] = None,
-        new_client_order_id: Optional[str] = None,
-        stop_price: Optional[int] = None,
-        iceberg_qty: Optional[int] = None,
+        stop_price: Optional[float] = None,
+        iceberg_qty: Optional[float] = None,
         time_in_force: Optional[str] = None,
     ) -> dict:
         """
@@ -777,17 +750,17 @@ class HTTP(_SpotHTTP):
         :param order_type: Order type (LIMIT/MARKET)
         :type order_type: str
         :param quantity: Order quantity
-        :type quantity: Optional[int]
+        :type quantity: Optional[float]
         :param quote_order_qty: Quote order quantity
-        :type quote_order_qty: Optional[int]
+        :type quote_order_qty: Optional[float]
         :param price: Order price
-        :type price: Optional[int]
+        :type price: Optional[float]
         :param new_client_order_id: Client order ID
         :type new_client_order_id: Optional[str]
         :param stop_price: Stop price
-        :type stop_price: Optional[int]
+        :type stop_price: Optional[float]
         :param iceberg_qty: Iceberg quantity
-        :type iceberg_qty: Optional[int]
+        :type iceberg_qty: Optional[float]
         :param time_in_force: Time in force
         :type time_in_force: Optional[str]
 

@@ -98,8 +98,12 @@ class _AsyncWebSocketManager(_WebSocketManager):
             async for msg in ws:
                 if msg.type in [aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY]:
                     await self._on_message(msg.data)
+                elif msg.type == aiohttp.WSMsgType.CLOSE:
+                    break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     await self._on_error(msg)
+                    break
+                elif msg.type == aiohttp.WSMsgType.CLOSED:
                     break
         except Exception as e:
             await self._on_error(e)
@@ -124,7 +128,6 @@ class _AsyncWebSocketManager(_WebSocketManager):
         """
         Open websocket in a thread.
         """
-
         async def resubscribe_to_topics():
             if not self.subscriptions:
                 # There are no subscriptions to resubscribe to, probably
@@ -217,6 +220,12 @@ class _AsyncWebSocketManager(_WebSocketManager):
             except asyncio.CancelledError:
                 pass
         super()._on_close()
+        
+        # FIX: Trigger reconnection on graceful close (same as _on_error)
+        # Only reconnect if not explicitly exited and restart_on_error is enabled
+        if self.restart_on_error and not self.attempting_connection and not self.exited:
+            self._reset()
+            await self._connect(self.endpoint)
 
     async def __aenter__(self):
         """
