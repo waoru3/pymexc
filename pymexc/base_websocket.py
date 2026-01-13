@@ -371,11 +371,6 @@ class _WebSocketManager:
                 continue
         self.exited = True
 
-    def _check_callback_directory(self, topics):
-        for topic in topics:
-            if topic in self.callback_directory:
-                raise Exception(f"You have already subscribed to this topic: {topic}")
-
     def _set_callback(self, topic: str, callback_function: Callable):
         self.callback_directory[topic] = callback_function
 
@@ -517,8 +512,15 @@ class _FuturesWebSocketManager(_WebSocketManager):
         super().__init__(callback_function, ws_name, **kwargs)
 
     def subscribe(self, topic, callback, params: dict = {}):
+        normalized_topic = self._topic(topic)
+
         subscription_args = {"method": topic, "param": params}
-        self._check_callback_directory(subscription_args)
+
+        # Check for duplicate subscription using (method, param) - allows same topic for different symbols
+        for sub in self.subscriptions:
+            if sub.get("method") == topic and sub.get("param") == params:
+                logger.debug(f"Already subscribed to {topic} with params {params}, skipping")
+                return
 
         while not self.is_connected():
             # Wait until the connection is open before subscribing.
@@ -527,8 +529,10 @@ class _FuturesWebSocketManager(_WebSocketManager):
         subscription_message = json.dumps(subscription_args)
         self.ws.send(subscription_message)
         self.subscriptions.append(subscription_args)
-        self._set_callback(self._topic(topic), callback)
-        self.last_subsctiption = self._topic(topic)
+        # Register callback once per topic (all symbols for same topic share callback)
+        if normalized_topic not in self.callback_directory:
+            self._set_callback(normalized_topic, callback)
+        self.last_subsctiption = normalized_topic
 
     def unsubscribe(self, method: str | Callable) -> None:
         if not method:
@@ -623,18 +627,27 @@ class _SpotWebSocketManager(_WebSocketManager):
         self.private_topics = ["account", "deals", "orders"]
 
     def subscribe(self, topic: str, callback: Callable, params_list: list, interval: str = None):
+        # Build the full subscription params (includes symbol)
+        full_params = [
+            "@".join(
+                [f"spot@{topic}.v3.api" + (".pb" if self.proto else "")] 
+                + ([str(interval)] if interval else [])
+                + list(map(str, params.values()))
+            )
+            for params in params_list
+        ]
+
+        # Check for duplicate subscription using full param string (includes symbol)
+        # This allows multiple symbols to subscribe to the same topic
+        for param in full_params:
+            if any(param in sub.get("params", []) for sub in self.subscriptions):
+                logger.debug(f"Already subscribed to {param}, skipping")
+                return
+
         subscription_args = {
             "method": "SUBSCRIPTION",
-            "params": [
-                "@".join(
-                    [f"spot@{topic}.v3.api" + (".pb" if self.proto else "")] 
-                    + ([str(interval)] if interval else [])
-                    + list(map(str, params.values()))
-                )
-                for params in params_list
-            ],
+            "params": full_params,
         }
-        self._check_callback_directory(subscription_args)
 
         while not self.is_connected():
             # Wait until the connection is open before subscribing.
@@ -643,7 +656,9 @@ class _SpotWebSocketManager(_WebSocketManager):
         subscription_message = json.dumps(subscription_args)
         self.ws.send(subscription_message)
         self.subscriptions.append(subscription_args)
-        self._set_callback(topic, callback)
+        # Register callback by topic (all symbols for same topic share callback)
+        if topic not in self.callback_directory:
+            self._set_callback(topic, callback)
         self.last_subsctiption = topic
 
     def unsubscribe(self, *topics: str | Callable):
