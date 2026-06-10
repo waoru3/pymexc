@@ -58,3 +58,103 @@ class TestFuturesSignRequest:
         assert body is None
         assert out_params == {}
         assert signature == hmac_hex("")
+
+
+def make_response(ok=True, status=200, payload=None, text=""):
+    response = MagicMock()
+    response.ok = ok
+    response.status_code = status
+    response.text = text
+    if payload is None:
+        response.json.side_effect = ValueError("not json")
+    else:
+        response.json.return_value = payload
+    return response
+
+
+class TestFuturesCall:
+    def setup_method(self):
+        self.client = HTTP(api_key=API_KEY, api_secret=API_SECRET, ignore_ad=True)
+
+    def _call(self, response, fn, *args, **kwargs):
+        with (
+            patch.object(self.client.session, "request", return_value=response) as request_mock,
+            patch("pymexc.base.time.time", return_value=FROZEN_TIME),
+        ):
+            result = fn(*args, **kwargs)
+        return result, request_mock
+
+    def test_order_posts_json_body_to_api_mexc_com(self):
+        response = make_response(payload={"success": True, "code": 0, "data": 1})
+        result, request_mock = self._call(
+            response, self.client.order,
+            symbol="BTC_USDT", price=30000, vol=1, side=1, type=1, open_type=1, leverage=1,
+        )
+        method, url = request_mock.call_args.args
+        kwargs = request_mock.call_args.kwargs
+        assert method == "POST"
+        assert url == "https://api.mexc.com/api/v1/private/order/submit"
+        # None-valued optionals stripped; reduce_only=False survives; insertion order kept
+        assert kwargs["data"] == (
+            '{"symbol":"BTC_USDT","price":30000,"vol":1,"side":1,"type":1,'
+            '"openType":1,"leverage":1,"reduceOnly":false}'
+        )
+        assert "params" not in kwargs
+        # byte-identity: signature recomputed over the exact sent body
+        assert kwargs["headers"]["Signature"] == hmac_hex(kwargs["data"])
+        assert kwargs["headers"]["Request-Time"] == TS
+        # ApiKey / Content-Type ride on the session (set in __init__)
+        assert self.client.session.headers["ApiKey"] == API_KEY
+        assert self.client.session.headers["Content-Type"] == "application/json"
+        assert result == {"success": True, "code": 0, "data": 1}
+
+    def test_cancel_order_posts_list_body(self):
+        response = make_response(payload={"success": True, "code": 0})
+        _, request_mock = self._call(response, self.client.cancel_order, 123456789)
+        method, url = request_mock.call_args.args
+        kwargs = request_mock.call_args.kwargs
+        assert method == "POST"
+        assert url == "https://api.mexc.com/api/v1/private/order/cancel"
+        assert kwargs["data"] == "[123456789]"
+        assert kwargs["headers"]["Signature"] == hmac_hex("[123456789]")
+
+    def test_change_leverage_posts_json_body(self):
+        response = make_response(payload={"success": True, "code": 0})
+        _, request_mock = self._call(response, self.client.change_leverage, position_id=1, leverage=20)
+        kwargs = request_mock.call_args.kwargs
+        assert request_mock.call_args.args[1] == "https://api.mexc.com/api/v1/private/position/change_leverage"
+        assert kwargs["data"] == '{"positionId":1,"leverage":20}'
+        assert kwargs["headers"]["Signature"] == hmac_hex(kwargs["data"])
+
+    def test_get_keeps_query_params_and_signs_sorted(self):
+        response = make_response(payload={"success": True, "code": 0, "data": []})
+        _, request_mock = self._call(response, self.client.open_orders, symbol="BTC_USDT")
+        method, url = request_mock.call_args.args
+        kwargs = request_mock.call_args.kwargs
+        assert method == "GET"
+        assert url == "https://api.mexc.com/api/v1/private/order/list/open_orders/BTC_USDT"
+        assert kwargs["params"] == {"symbol": "BTC_USDT", "page_num": 1, "page_size": 20}
+        assert "data" not in kwargs
+        assert kwargs["headers"]["Signature"] == hmac_hex("page_num=1&page_size=20&symbol=BTC_USDT")
+
+    def test_http_error_with_json_body_raises(self):
+        response = make_response(ok=False, status=400, payload={"success": False, "code": 602, "message": "Confirming signature failed"})
+        with pytest.raises(MexcAPIError, match="code=602"):
+            self._call(response, self.client.cancel_order, 1)
+
+    def test_http_error_with_html_body_raises(self):
+        # contract.mexc.com WAF block shape: 403 + Akamai HTML page
+        response = make_response(ok=False, status=403, payload=None, text="<HTML><HEAD>Access Denied</HEAD></HTML>")
+        with pytest.raises(MexcAPIError, match="HTTP 403"):
+            self._call(response, self.client.order, symbol="BTC_USDT", price=1, vol=1, side=1, type=1, open_type=1)
+
+    def test_unauthenticated_public_get_sends_no_signature(self):
+        client = HTTP(ignore_ad=True)
+        response = make_response(payload={"success": True, "code": 0, "data": {}})
+        with (
+            patch.object(client.session, "request", return_value=response) as request_mock,
+            patch("pymexc.base.time.time", return_value=FROZEN_TIME),
+        ):
+            client.ticker(symbol="BTC_USDT")
+        assert request_mock.call_args.kwargs.get("headers") is None
+        assert request_mock.call_args.kwargs["params"] == {"symbol": "BTC_USDT"}
