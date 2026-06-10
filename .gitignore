@@ -139,4 +139,5 @@ upload.bat
 .claude/
 .serena/
 
-docs/tmp/
+docs/
+tmp/
