@@ -13,6 +13,10 @@ Base of code was taken from [pybit](https://github.com/bybit-exchange/pybit) lib
 
 MEXC Futures API for create orders is on maintance now. **_But you can bypass it_**. See [this issue](https://github.com/makarworld/pymexc/issues/15) for more information.
 
+## Fork note: futures REST trading fixed
+
+This fork restores futures REST trading. POST requests now sign `accessKey + timestamp + compact-JSON-body`, where the signed body is byte-identical to the body actually sent. The futures base URL is `https://api.mexc.com`. Trading endpoints (order placement / cancellation) were live-verified on 2026-06-10. The maintenance-era bypass note above is therefore obsolete for order placement.
+
 # Installation
 
 You can install pymexc using pip:
