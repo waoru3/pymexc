@@ -52,6 +52,7 @@ async def test_order_posts_json_body_to_api_mexc_com():
         '"openType":1,"leverage":1,"reduceOnly":false}'
     )
     assert kwargs["headers"]["Signature"] == hmac_hex(kwargs["data"])
+    assert "params" not in kwargs
     assert result == {"success": True, "code": 0, "data": 1}
 
 
@@ -93,4 +94,16 @@ async def test_http_error_raises():
         patch("pymexc._async.base.time.time", return_value=FROZEN_TIME),
     ):
         with pytest.raises(MexcAPIError, match="HTTP 403"):
+            await client.cancel_order(1)
+
+
+@pytest.mark.asyncio
+async def test_http_error_with_json_body_raises():
+    client = HTTP(api_key=API_KEY, api_secret=API_SECRET, ignore_ad=True)
+    response = make_response(ok=False, status=400, payload={"success": False, "code": 602, "message": "Confirming signature failed"})
+    with (
+        patch.object(client.session, "request", new=AsyncMock(return_value=response)),
+        patch("pymexc._async.base.time.time", return_value=FROZEN_TIME),
+    ):
+        with pytest.raises(MexcAPIError, match="code=602"):
             await client.cancel_order(1)
