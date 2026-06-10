@@ -148,6 +148,16 @@ class TestFuturesCall:
         with pytest.raises(MexcAPIError, match="HTTP 403"):
             self._call(response, self.client.order, symbol="BTC_USDT", price=1, vol=1, side=1, type=1, open_type=1)
 
+    def test_post_with_all_none_params_sends_no_body_signs_empty(self):
+        # cancel_all() with default symbol=None strips to {} - must behave
+        # like a no-parameter POST: no body, signature over empty string
+        response = make_response(payload={"success": True, "code": 0})
+        _, request_mock = self._call(response, self.client.cancel_all)
+        kwargs = request_mock.call_args.kwargs
+        assert "data" not in kwargs
+        assert "params" not in kwargs
+        assert kwargs["headers"]["Signature"] == hmac_hex("")
+
     def test_unauthenticated_public_get_sends_no_signature(self):
         client = HTTP(ignore_ad=True)
         response = make_response(payload={"success": True, "code": 0, "data": {}})

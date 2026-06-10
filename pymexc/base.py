@@ -229,6 +229,10 @@ class _FuturesHTTP(MexcSDK):
         payload = kwargs.pop("json", None)
         if payload is None:
             payload = kwargs.pop("params", None)
+        if not payload:
+            # all-None optionals strip to {} / []; guide: "if there are no
+            # parameters, use an empty string" - sign "" and send no body
+            payload = None
 
         timestamp = str(int(time.time() * 1000))
         signature, body, params = futures_sign_request(self.api_key, self.api_secret, timestamp, method, payload)
