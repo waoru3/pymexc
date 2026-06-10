@@ -30,14 +30,16 @@ def futures_sign_request(
     """Build the futures API signature per the MEXC integration guide.
 
     Returns (signature, body, params):
-    - POST: body is the compact JSON string of payload (None -> ""); the
+    - POST: body is the compact JSON string of payload ({} / [] / None -> ""); the
       signature is computed over api_key + timestamp + body. The caller MUST
       send body byte-identical as the request data.
     - GET/DELETE: params passes through; the signature target is the
       "&"-joined k=v pairs sorted by key.
     """
     if method == "POST":
-        body = "" if payload is None else json.dumps(payload, separators=(",", ":"))
+        # {} / [] / None all mean "no parameters"; guide: "if there are no
+        # parameters, use an empty string"
+        body = json.dumps(payload, separators=(",", ":")) if payload else ""
         target = body
         params = None
     else:
@@ -229,10 +231,6 @@ class _FuturesHTTP(MexcSDK):
         payload = kwargs.pop("json", None)
         if payload is None:
             payload = kwargs.pop("params", None)
-        if not payload:
-            # all-None optionals strip to {} / []; guide: "if there are no
-            # parameters, use an empty string" - sign "" and send no body
-            payload = None
 
         timestamp = str(int(time.time() * 1000))
         signature, body, params = futures_sign_request(self.api_key, self.api_secret, timestamp, method, payload)

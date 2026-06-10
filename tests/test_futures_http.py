@@ -37,10 +37,11 @@ class TestFuturesSignRequest:
         assert params is None
         assert signature == "80d8e51224377143717d45628c9fee414051abdaa11c1baa0e377d91bf0901a3"
 
-    def test_post_none_payload_signs_empty_body(self):
-        # change_risk_level posts without payload; integration guide: "if there
-        # are no parameters, use an empty string" (method unused by the bot)
-        signature, body, params = futures_sign_request(API_KEY, API_SECRET, TS, "POST", None)
+    @pytest.mark.parametrize("payload", [None, {}, []])
+    def test_post_empty_payload_signs_empty_body(self, payload):
+        # {} / [] / None all mean "no parameters"; integration guide: "if
+        # there are no parameters, use an empty string"
+        signature, body, params = futures_sign_request(API_KEY, API_SECRET, TS, "POST", payload)
         assert body == ""
         assert params is None
         assert signature == "88000ed348e8e57dfb4ae8ad93386a021b6f2f41ea839188723b7762d8c01e12"
