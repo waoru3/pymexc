@@ -1,9 +1,10 @@
 import hashlib
 import hmac
+import json
 import logging
 import time
 from abc import ABC
-from typing import Literal, Union
+from typing import Literal, Optional, Tuple, Union
 from urllib.parse import urlencode
 
 from curl_cffi import requests
@@ -11,12 +12,46 @@ from curl_cffi import requests
 logger = logging.getLogger(__name__)
 
 SPOT = "https://api.mexc.com"
-FUTURES = "https://contract.mexc.com"
+FUTURES = "https://api.mexc.com"
 WEB = "https://futures.mexc.com"
 
 
 class MexcAPIError(Exception):
     pass
+
+
+def futures_sign_request(
+    api_key: Optional[str],
+    api_secret: Optional[str],
+    timestamp: str,
+    method: str,
+    payload: Union[dict, list, None],
+) -> Tuple[str, Optional[str], Optional[dict]]:
+    """Build the futures API signature per the MEXC integration guide.
+
+    Returns (signature, body, params):
+    - POST: body is the compact JSON string of payload ({} / [] / None -> ""); the
+      signature is computed over api_key + timestamp + body. The caller MUST
+      send body byte-identical as the request data.
+    - GET/DELETE: params passes through; the signature target is the
+      "&"-joined k=v pairs sorted by key.
+    """
+    if method == "POST":
+        # {} / [] / None all mean "no parameters"; guide: "if there are no
+        # parameters, use an empty string"
+        body = json.dumps(payload, separators=(",", ":")) if payload else ""
+        target = body
+        params = None
+    else:
+        body = None
+        params = payload or {}
+        target = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+    signature = hmac.new(
+        (api_secret or "").encode("utf-8"),
+        f"{api_key or ''}{timestamp}{target}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return signature, body, params
 
 
 class OrderSide:
@@ -158,28 +193,6 @@ class _FuturesHTTP(MexcSDK):
 
         self.session.headers.update({"Content-Type": "application/json", "ApiKey": self.api_key})
 
-    def sign(self, timestamp: str, **kwargs) -> str:
-        """
-        Generates a signature for an API request using HMAC SHA256 encryption.
-
-        :param timestamp: A string representing the timestamp of the request.
-        :type timestamp: str
-        :param kwargs: Arbitrary keyword arguments representing request parameters.
-        :type kwargs: dict
-
-        :return: A hexadecimal string representing the signature of the request.
-        :rtype: str
-        """
-        # Generate signature
-        query_string = "&".join([f"{k}={v}" for k, v in sorted(kwargs.items())])
-        query_string = self.api_key + timestamp + query_string
-        signature = hmac.new(
-            self.api_secret.encode("utf-8"),
-            query_string.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        return signature
-
     def call(
         self,
         method: Union[Literal["GET"], Literal["POST"], Literal["PUT"], Literal["DELETE"]],
@@ -188,18 +201,12 @@ class _FuturesHTTP(MexcSDK):
         **kwargs,
     ) -> dict:
         """
-        Makes a request to the specified HTTP method and router using the provided arguments.
+        Makes a request to the specified HTTP method and router.
 
-        :param method: A string that represents the HTTP method(GET, POST, PUT, or DELETE) to be used.
-        :type method: str
-        :param router: A string that represents the API endpoint to be called.
-        :type router: str
-        :param *args: Variable length argument list.
-        :type *args: list
-        :param **kwargs: Arbitrary keyword arguments.
-        :type **kwargs: dict
-
-        :return: A dictionary containing the JSON response of the request.
+        POST payloads (passed as either `json=` or `params=`) are serialized
+        to a compact JSON body and signed over api_key + timestamp + body
+        (MEXC integration guide). GET/DELETE keep query params and sign the
+        sorted k=v join. Raises MexcAPIError on HTTP errors.
         """
 
         if not router.startswith("/"):
@@ -221,17 +228,33 @@ class _FuturesHTTP(MexcSDK):
                 elif isinstance(kwarg_variant, list):
                     kwargs[variant] = [v for v in kwarg_variant if v is not None]
 
-        if self.api_key and self.api_secret:
-            # Add signature
-            timestamp = str(int(time.time() * 1000))
-            payload = kwargs.get("json") or kwargs.get("params") or {}
+        payload = kwargs.pop("json", None)
+        if payload is None:
+            payload = kwargs.pop("params", None)
 
+        timestamp = str(int(time.time() * 1000))
+        signature, body, params = futures_sign_request(self.api_key, self.api_secret, timestamp, method, payload)
+
+        if method == "POST":
+            if body:
+                kwargs["data"] = body
+        elif params:
+            kwargs["params"] = params
+
+        if self.api_key and self.api_secret:
             kwargs["headers"] = {
                 "Request-Time": timestamp,
-                "Signature": self.sign(timestamp, **payload),
+                "Signature": signature,
             }
 
         response = self.session.request(method, f"{self.base_url}{router}", *args, **kwargs)
+
+        if not response.ok:
+            try:
+                error = response.json()
+            except Exception:
+                raise MexcAPIError(f"(HTTP {response.status_code}): {response.text[:200]}")
+            raise MexcAPIError(f"(code={error.get('code')}): {error.get('message') or error.get('msg')}")
 
         return response.json()
 

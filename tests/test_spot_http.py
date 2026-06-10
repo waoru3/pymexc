@@ -10,10 +10,12 @@ from dotenv import dotenv_values
 import pymexc.base
 from pymexc.spot import HTTP
 
+pytestmark = pytest.mark.integration
+
 env = dotenv_values(".env")
 
-api_key = env["API_KEY"]
-api_secret = env["API_SECRET"]
+api_key = env.get("API_KEY")
+api_secret = env.get("API_SECRET")
 
 http = HTTP(api_key=api_key, api_secret=api_secret)
 
