@@ -51,8 +51,9 @@ def test_futures_order_lifecycle():
     # /order/create documents {"orderId": ..., "ts": ...}. Extract robustly so
     # a schema change cannot strand a live order.
     data = order["data"]
+    print(f"\nraw order response data: {data!r}")
     order_id = data["orderId"] if isinstance(data, dict) else data
-    print(f"\nplaced order {order_id} at {price}")
+    print(f"placed order {order_id} at {price}")
 
     try:
         # 4. Order visible via private GET (TASK-19 AC#2)
