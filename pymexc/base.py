@@ -1,9 +1,10 @@
 import hashlib
 import hmac
+import json
 import logging
 import time
 from abc import ABC
-from typing import Literal, Union
+from typing import Literal, Optional, Tuple, Union
 from urllib.parse import urlencode
 
 from curl_cffi import requests
@@ -17,6 +18,38 @@ WEB = "https://futures.mexc.com"
 
 class MexcAPIError(Exception):
     pass
+
+
+def futures_sign_request(
+    api_key: Optional[str],
+    api_secret: Optional[str],
+    timestamp: str,
+    method: str,
+    payload: Union[dict, list, None],
+) -> Tuple[str, Optional[str], Optional[dict]]:
+    """Build the futures API signature per the MEXC integration guide.
+
+    Returns (signature, body, params):
+    - POST: body is the compact JSON string of payload (None -> ""); the
+      signature is computed over api_key + timestamp + body. The caller MUST
+      send body byte-identical as the request data.
+    - GET/DELETE: params passes through; the signature target is the
+      "&"-joined k=v pairs sorted by key.
+    """
+    if method == "POST":
+        body = "" if payload is None else json.dumps(payload, separators=(",", ":"))
+        target = body
+        params = None
+    else:
+        body = None
+        params = payload or {}
+        target = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+    signature = hmac.new(
+        (api_secret or "").encode("utf-8"),
+        f"{api_key or ''}{timestamp}{target}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return signature, body, params
 
 
 class OrderSide:
