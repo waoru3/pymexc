@@ -699,7 +699,7 @@ class HTTP(_FuturesHTTP):
         :return: A dictionary containing the queried order based on the order number.
         :rtype: dict
         """
-        return self.call("GET", f"api/v1/private/order/{order_id}")
+        return self.call("GET", f"api/v1/private/order/get/{order_id}")
 
     def batch_query(self, order_ids: List[int]) -> dict:
         """
