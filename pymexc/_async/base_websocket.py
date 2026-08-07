@@ -72,6 +72,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
         self._recv_task: Optional[asyncio.Task] = None
         # Serializes _connect so concurrent callers cannot race on self.ws/self.session.
         self._connect_lock = asyncio.Lock()
+        self._connected_url: Optional[str] = None
 
         if ping_timeout:
             warnings.warn(
@@ -159,6 +160,22 @@ class _AsyncWebSocketManager(_WebSocketManager):
         self.endpoint = url
 
         try:
+            # An explicit connect request supersedes a previous exit() (which the sync
+            # base sets on every error); shutdown flipping it back while we handshake is
+            # what the post-handshake check below catches.
+            self.exited = False
+
+            if self.is_connected() and self._connected_url != url:
+                # While we waited for the lock another connect published a socket on a
+                # DIFFERENT endpoint (spot carries the listenKey in the URL). Riding it
+                # would send our subscriptions to the wrong endpoint, so drop it first.
+                logger.info(
+                    f"WebSocket {self.ws_name} dropping socket on {self._connected_url} in favour of {url}"
+                )
+                self.connected = False
+                if self.ws is not None and not self.ws.closed:
+                    await self.ws.close()
+
             # Attempt to connect for X seconds.
             retries = self.retries
             if retries == 0:
@@ -186,9 +203,17 @@ class _AsyncWebSocketManager(_WebSocketManager):
                     await session.close()
                     raise
 
+                if self.exited:
+                    # Shutdown ran while we were handshaking; publishing now would
+                    # resurrect the connection behind close_all()/__aexit__'s back.
+                    await ws.close()
+                    await session.close()
+                    raise RuntimeError(f"WebSocket {self.ws_name} was closed during connect")
+
                 # Publish only once both exist, then hand ownership to the read loop.
                 self.session = session
                 self.ws = ws
+                self._connected_url = url
                 self._recv_task = self.loop.create_task(self._loop_recv(ws, session))
                 self._recv_task.add_done_callback(self._log_recv_task_exception)
 
@@ -280,6 +305,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
         """
         Async context manager exit - ensures proper cleanup.
         """
+        # Flag first: a handshake already in flight must not publish its socket after us.
+        self.exited = True
+
         # Unsubscribe from all topics if the method exists (defined in subclasses)
         if hasattr(self, 'unsubscribe_all'):
             await self.unsubscribe_all()
@@ -311,6 +339,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
         This method is called automatically when using context manager,
         but can also be called manually.
         """
+        # Flag first: a handshake already in flight must not publish its socket after us.
+        self.exited = True
+
         # First unsubscribe from everything
         if hasattr(self, 'unsubscribe_all'):
             try:
