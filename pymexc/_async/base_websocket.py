@@ -68,6 +68,10 @@ class _AsyncWebSocketManager(_WebSocketManager):
         )
         self.connected = False
         self.loop = loop or asyncio.get_event_loop()
+        # pymexc left both unset until the first connect; the teardown paths below
+        # dereference them, so define them up front.
+        self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
+        self.session: Optional[ClientSession] = None
         self._keep_alive_task: Optional[asyncio.Task] = None
         self._recv_task: Optional[asyncio.Task] = None
         # Serializes _connect so concurrent callers cannot race on self.ws/self.session.
@@ -109,7 +113,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     if self.ws is ws:
-                        await self._on_error(msg)
+                        # aiohttp puts the exception in .data; the message itself is not
+                        # raisable and would derail the handler.
+                        await self._on_error(msg.data)
                     break
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
                     break
@@ -279,7 +285,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 raise
 
         # Reconnect.
-        if self.restart_on_error and not self.attempting_connection:
+        if self.restart_on_error and not self.attempting_connection and not self._closing:
             self._reset()
             await self._connect(self.endpoint)
 
@@ -295,7 +301,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
         
         # FIX: Trigger reconnection on graceful close (same as _on_error)
         # Only reconnect if not explicitly exited and restart_on_error is enabled
-        if self.restart_on_error and not self.attempting_connection and not self.exited:
+        if self.restart_on_error and not self.attempting_connection and not self.exited and not self._closing:
             self._reset()
             await self._connect(self.endpoint)
 
@@ -304,6 +310,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
         Async context manager entry - ensures connection is established.
         """
         self._closing = False
+        self.exited = False
 
         # Connect if not already connected
         if not self.is_connected() and hasattr(self, 'endpoint'):
@@ -321,7 +328,11 @@ class _AsyncWebSocketManager(_WebSocketManager):
 
         # Unsubscribe from all topics if the method exists (defined in subclasses)
         if hasattr(self, 'unsubscribe_all'):
-            await self.unsubscribe_all()
+            try:
+                await self.unsubscribe_all()
+            except Exception as e:
+                # Never skip the closes below - the socket may already be gone.
+                logger.debug(f"unsubscribe_all during shutdown failed: {e}")
 
         # Close the websocket connection
         if self.ws and not self.ws.closed:
@@ -359,8 +370,8 @@ class _AsyncWebSocketManager(_WebSocketManager):
         if hasattr(self, 'unsubscribe_all'):
             try:
                 await self.unsubscribe_all()
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                logger.debug(f"Network error during unsubscribe_all: {e}")
+            except Exception as e:
+                logger.debug(f"unsubscribe_all during shutdown failed: {e}")
             except asyncio.CancelledError:
                 pass  # Task was cancelled, that's OK
 

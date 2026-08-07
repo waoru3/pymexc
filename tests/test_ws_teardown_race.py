@@ -64,9 +64,6 @@ def make_manager() -> _AsyncWebSocketManager:
 
     manager = _AsyncWebSocketManager(callback, "test", ping_interval=0)
     manager.endpoint = SPOT
-    # pymexc leaves both unset until the first connect; close paths dereference them.
-    manager.ws = None
-    manager.session = None
     return manager
 
 
@@ -129,23 +126,28 @@ async def test_stale_loop_ignores_error_frame():
 
 
 @pytest.mark.asyncio
-async def test_recv_task_exception_is_retrieved(caplog):
+async def test_recv_task_exception_is_retrieved(caplog, monkeypatch):
     """The done-callback must retrieve (and log) the exception of a task nobody awaits,
     otherwise it resurfaces as 'Task exception was never retrieved'."""
     manager = make_manager()
-    ws, session = FakeWS(), FakeSession()
-    manager.ws, manager.session = ws, session
+
+    class OkSession(FakeSession):
+        async def ws_connect(self, **kwargs):
+            return FakeWS(hang=True)
+
+    monkeypatch.setattr(bw, "ClientSession", OkSession)
+    await manager._connect(SPOT)  # registers the done-callback in production code
 
     async def boom():
         raise RuntimeError("reconnect exploded")
 
     manager._on_close = boom
+    session = manager.session
 
     with caplog.at_level("WARNING", logger=bw.__name__):
-        task = asyncio.create_task(manager._loop_recv(ws, session))
-        task.add_done_callback(manager._log_recv_task_exception)
-        await asyncio.sleep(0.05)  # fire-and-forget: never awaited
-        assert task.done()
+        await manager.ws.close()  # nobody awaits the recv task it kills
+        await asyncio.sleep(0.05)
+        assert manager._recv_task.done()
 
     assert "reconnect exploded" in caplog.text  # i.e. task.exception() was consumed
     assert session.closed
@@ -261,6 +263,13 @@ async def test_connect_to_other_url_retires_the_old_socket(monkeypatch):
     manager._on_close = spy_on_close
     manager._on_error = spy_on_error
 
+    retired_while_current = []
+
+    class ProbedWS(FakeWS):
+        async def close(self):
+            retired_while_current.append(manager.ws is self)
+            await super().close()
+
     class SlowSession(FakeSession):
         def __init__(self, *args, **kwargs):
             super().__init__()
@@ -269,7 +278,7 @@ async def test_connect_to_other_url_retires_the_old_socket(monkeypatch):
         async def ws_connect(self, **kwargs):
             handshakes.append(kwargs["url"])
             await asyncio.sleep(0.02)
-            sockets.append(FakeWS(hang=True))
+            sockets.append(ProbedWS(hang=True))
             return sockets[-1]
 
     monkeypatch.setattr(bw, "ClientSession", SlowSession)
@@ -282,6 +291,7 @@ async def test_connect_to_other_url_retires_the_old_socket(monkeypatch):
     assert manager.ws is sockets[-1] and not manager.ws.closed
     assert sockets[0].closed and sessions[0].closed  # retired, and cleaned up by its loop
     assert closes == [] and errors == []  # stale loop ran no current-socket policy
+    assert retired_while_current == [False]  # retired BEFORE the close, not after
     assert manager.is_connected()
     await shutdown(manager)
 
@@ -347,4 +357,71 @@ async def test_error_flag_does_not_block_a_later_connect(monkeypatch):
     await manager._connect(SPOT)
 
     assert manager.is_connected() and manager.ws is not None
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
+async def test_live_error_frame_reports_the_exception():
+    """aiohttp carries the exception in msg.data; the WSMessage itself is not raisable."""
+    manager = make_manager()
+    failure = aiohttp.ClientConnectionError("transport gone")
+    ws = FakeWS(messages=[SimpleNamespace(type=aiohttp.WSMsgType.ERROR, data=failure)])
+    session = FakeSession()
+    manager.ws, manager.session = ws, session
+    calls = patch_connect(manager, replace_socket=True)
+    errors = []
+    original_on_error = manager._on_error
+
+    async def spy(err):
+        errors.append(err)
+        await original_on_error(err)
+
+    manager._on_error = spy
+
+    await manager._loop_recv(ws, session)
+
+    assert errors == [failure]
+    assert calls == [SPOT]  # and it still reconnects
+    assert session.closed
+
+
+@pytest.mark.asyncio
+async def test_error_during_shutdown_does_not_reconnect(monkeypatch):
+    """The ping loop can fail *because* teardown closed the socket; that must not turn
+    into a reconnect attempt whose rejection escapes into close_all()/__aexit__."""
+    manager = make_manager()
+    sessions = []
+
+    class OkSession(FakeSession):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            sessions.append(self)
+
+        async def ws_connect(self, **kwargs):
+            return FakeWS(hang=True)
+
+    monkeypatch.setattr(bw, "ClientSession", OkSession)
+    await manager._connect(SPOT)
+    await manager.close_all()
+
+    await manager._on_error(aiohttp.ClientConnectionError("Cannot write to closing transport"))
+
+    assert len(sessions) == 1  # no reconnect handshake was attempted
+
+
+@pytest.mark.asyncio
+async def test_reentry_clears_both_latches(monkeypatch):
+    manager = make_manager()
+
+    class OkSession(FakeSession):
+        async def ws_connect(self, **kwargs):
+            return FakeWS(hang=True)
+
+    monkeypatch.setattr(bw, "ClientSession", OkSession)
+
+    await manager.__aexit__(None, None, None)
+    await manager.__aenter__()
+
+    assert manager._closing is False
+    assert manager.exited is False  # else _on_close would never reconnect again
     await shutdown(manager)
