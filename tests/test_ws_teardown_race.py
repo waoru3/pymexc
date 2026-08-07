@@ -62,6 +62,10 @@ class FakeSession:
         self.closed = True
 
 
+async def _noop(*args, **kwargs):
+    return None
+
+
 def make_manager() -> _AsyncWebSocketManager:
     async def callback(_message):
         return None
@@ -536,4 +540,69 @@ async def test_reconnect_replays_every_subscription(monkeypatch):
 
     assert len(sockets) == 2
     assert sockets[1].sent == manager.subscriptions  # full replay on the fresh socket
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
+async def test_queued_connect_repairs_a_failed_setup(monkeypatch):
+    """The fast path must not bless a socket whose auth/replay/ping never completed -
+    the queued caller has to run the tail itself (PR #10 review, round 2)."""
+    manager = make_manager()
+    manager.api_key = manager.api_secret = "x"
+    auths, ping_loops = [], []
+
+    class SlowSession(FakeSession):
+        async def ws_connect(self, **kwargs):
+            await asyncio.sleep(0.02)
+            return FakeWS(hang=True)
+
+    monkeypatch.setattr(bw, "ClientSession", SlowSession)
+    manager._auth = _noop
+    manager._send_ping = _noop
+    await manager._connect(SPOT)  # a completed setup must not vouch for the NEXT socket
+    manager.connected = False
+
+    async def flaky_auth():
+        auths.append(True)
+        if len(auths) == 1:
+            raise RuntimeError("auth send failed")
+
+    manager._auth = flaky_auth
+    manager._start_ping_loop = lambda: ping_loops.append(True)
+
+    results = await asyncio.gather(
+        manager._connect(SPOT), manager._connect(SPOT), return_exceptions=True
+    )
+
+    assert sum(isinstance(r, RuntimeError) for r in results) == 1
+    assert len(auths) == 2  # the queued caller retried the failed setup
+    assert ping_loops == [True] and manager._setup_complete is True
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_subscribes_reach_the_socket_once(monkeypatch):
+    """Production shape: two _ws_subscribe-style callers racing on a fresh connection.
+    subscribe() sends directly, so the queued connect's replay must not resend it."""
+    manager = bw._SpotWebSocketManager("test", ping_interval=0, proto=False)
+    manager.endpoint = SPOT
+    sockets = []
+
+    class SlowSession(FakeSession):
+        async def ws_connect(self, **kwargs):
+            await asyncio.sleep(0.02)
+            sockets.append(FakeWS(hang=True))
+            return sockets[-1]
+
+    monkeypatch.setattr(bw, "ClientSession", SlowSession)
+
+    async def ws_subscribe(symbol):
+        if not manager.is_connected():
+            await manager._connect(SPOT)
+        await manager.subscribe("public.limit.depth", _noop, [{"symbol": symbol}])
+
+    await asyncio.gather(ws_subscribe("BTCUSDT"), ws_subscribe("ETHUSDT"))
+
+    assert len(sockets) == 1
+    assert sockets[0].sent == manager.subscriptions  # two subs, each sent exactly once
     await shutdown(manager)

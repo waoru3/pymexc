@@ -79,6 +79,8 @@ class _AsyncWebSocketManager(_WebSocketManager):
         self._connected_url: Optional[str] = None
         # Subscription messages already sent on the current socket (reset per socket).
         self._sent_subscriptions: List[dict] = []
+        # True once the current socket finished auth + replay + ping startup.
+        self._setup_complete = False
         # Sticky shutdown latch (close_all/__aexit__), unlike `exited` which the sync
         # base sets on every error. Only __aenter__ reopens.
         self._closing = False
@@ -160,6 +162,10 @@ class _AsyncWebSocketManager(_WebSocketManager):
             # Send only what the CURRENT socket has not seen yet. On a fresh socket that
             # is everything; for a caller queued behind the lock it is just whatever was
             # appended after the first caller's replay read the list.
+            # Drop entries for subscriptions that were unsubscribed since: they must be
+            # replayed again if they come back, and the ledger must not grow forever.
+            self._sent_subscriptions = [m for m in self._sent_subscriptions if m in self.subscriptions]
+
             for subscription_message in list(self.subscriptions):
                 if subscription_message in self._sent_subscriptions:
                     continue
@@ -191,11 +197,12 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 if old_ws is not None and not old_ws.closed:
                     await old_ws.close()
 
-            if self.is_connected():
-                # Same url, already live: another connect set this socket up while we
-                # waited for the lock. Logging in again, replaying every subscription and
-                # starting a second ping loop would duplicate all three - but a
-                # subscription appended since its replay still has to get across.
+            if self.is_connected() and self._setup_complete:
+                # Same url, already set up: another connect did auth + replay + ping while
+                # we waited for the lock. Redoing them would duplicate all three - but a
+                # subscription appended since its replay still has to get across. If that
+                # connect FAILED partway, _setup_complete is false and we fall through to
+                # run the tail ourselves.
                 logger.debug(f"WebSocket {self.ws_name} already connected to {url}")
                 await resubscribe_to_topics()
                 return
@@ -239,6 +246,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 self.ws = ws
                 self._connected_url = url
                 self._sent_subscriptions = []
+                self._setup_complete = False
                 self._recv_task = self.loop.create_task(self._loop_recv(ws, session))
                 self._recv_task.add_done_callback(self._log_recv_task_exception)
 
@@ -264,6 +272,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
             await resubscribe_to_topics()
             await self._send_ping()
             self._start_ping_loop()
+            self._setup_complete = True
         finally:
             # Must clear on failure/cancellation too, or _on_close/_on_error stay fenced
             # out of reconnecting forever.
@@ -498,6 +507,7 @@ class _FuturesWebSocketManager(_AsyncWebSocketManager):
 
         await self.ws.send_json(subscription_args)
         self.subscriptions.append(subscription_args)
+        self._sent_subscriptions.append(subscription_args)
         # Register callback once per topic (all symbols for same topic share callback)
         if normalized_topic not in self.callback_directory:
             self._set_callback(normalized_topic, callback)
@@ -667,6 +677,7 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
 
         await self.ws.send_json(subscription_args)
         self.subscriptions.append(subscription_args)
+        self._sent_subscriptions.append(subscription_args)
         # Register callback by topic (all symbols for same topic share callback)
         if topic not in self.callback_directory:
             self._set_callback(topic, callback)
