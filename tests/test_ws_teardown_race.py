@@ -32,6 +32,7 @@ class FakeWS:
         self._hang = hang
         self._messages = list(messages)
         self._closed_event = asyncio.Event()
+        self.sent = []
 
     def __aiter__(self):
         return self
@@ -48,6 +49,9 @@ class FakeWS:
     async def close(self):
         self.closed = True
         self._closed_event.set()
+
+    async def send_json(self, message):
+        self.sent.append(message)
 
 
 class FakeSession:
@@ -441,3 +445,95 @@ async def test_protocol_error_frame_reconnects():
 
     assert calls == [SPOT]
     assert session.closed
+
+
+@pytest.mark.asyncio
+async def test_queued_same_url_connect_does_not_redo_setup(monkeypatch):
+    """A caller queued behind the lock finds the socket already live: re-running the
+    login, the subscription replay and the ping-loop startup would duplicate all three
+    on that socket (PR #10 review)."""
+    manager = make_manager()
+    manager.api_key, manager.api_secret = "k", "s"
+    manager.subscriptions = [{"method": "SUBSCRIPTION", "params": ["a"]}]
+    auths, pings, ping_loops = [], [], []
+    sockets = []
+
+    async def fake_auth():
+        auths.append(True)
+
+    async def fake_send_ping():
+        pings.append(True)
+
+    manager._auth = fake_auth
+    manager._send_ping = fake_send_ping
+    manager._start_ping_loop = lambda: ping_loops.append(True)
+
+    class SlowSession(FakeSession):
+        async def ws_connect(self, **kwargs):
+            await asyncio.sleep(0.02)
+            sockets.append(FakeWS(hang=True))
+            return sockets[-1]
+
+    monkeypatch.setattr(bw, "ClientSession", SlowSession)
+
+    await asyncio.gather(manager._connect(SPOT), manager._connect(SPOT))
+
+    assert len(sockets) == 1
+    assert auths == [True] and pings == [True] and ping_loops == [True]
+    assert sockets[0].sent == manager.subscriptions  # each subscription sent once
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
+async def test_queued_same_url_connect_delivers_a_late_subscription(monkeypatch):
+    """The queued caller may have appended its subscription after the first caller's
+    replay already read the list; early-returning must not drop it."""
+    manager = make_manager()
+    first = {"method": "SUBSCRIPTION", "params": ["a"]}
+    late = {"method": "SUBSCRIPTION", "params": ["b"]}
+    manager.subscriptions = [first]
+    sockets = []
+
+    class ProbedWS(FakeWS):
+        async def send_json(self, message):
+            await super().send_json(message)
+            if message == first and late not in manager.subscriptions:
+                # the queued caller appends while the first replay is in flight
+                manager.subscriptions.append(late)
+
+    class SlowSession(FakeSession):
+        async def ws_connect(self, **kwargs):
+            await asyncio.sleep(0.02)
+            sockets.append(ProbedWS(hang=True))
+            return sockets[-1]
+
+    monkeypatch.setattr(bw, "ClientSession", SlowSession)
+
+    await asyncio.gather(manager._connect(SPOT), manager._connect(SPOT))
+
+    assert len(sockets) == 1
+    assert sockets[0].sent == [first, late]  # delivered, exactly once each
+    await shutdown(manager)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_replays_every_subscription(monkeypatch):
+    """The per-socket 'already sent' record must not survive into the next socket."""
+    manager = make_manager()
+    manager.subscriptions = [{"method": "SUBSCRIPTION", "params": ["a"]}]
+    sockets = []
+
+    class OkSession(FakeSession):
+        async def ws_connect(self, **kwargs):
+            sockets.append(FakeWS(hang=True))
+            return sockets[-1]
+
+    monkeypatch.setattr(bw, "ClientSession", OkSession)
+
+    await manager._connect(SPOT)
+    manager.connected = False  # what a disconnect leaves behind
+    await manager._connect(SPOT)
+
+    assert len(sockets) == 2
+    assert sockets[1].sent == manager.subscriptions  # full replay on the fresh socket
+    await shutdown(manager)
