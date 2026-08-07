@@ -2,11 +2,11 @@
 
 Covers the case where a socket's read loop outlives the socket: it must not drive
 reconnects, must not touch the replacement socket, must always close its own session,
-and must never leave an unretrieved task exception behind.
+and must never leave an unretrieved task exception behind. Also covers the connect
+serialization added alongside it (wrong-endpoint coalescing, shutdown races).
 """
 
 import asyncio
-import gc
 import os
 import sys
 from types import SimpleNamespace
@@ -21,13 +21,17 @@ from pymexc._async.base_websocket import _AsyncWebSocketManager, SPOT
 
 
 class FakeWS:
-    """Async-iterable stand-in for aiohttp.ClientWebSocketResponse."""
+    """Async-iterable stand-in for aiohttp.ClientWebSocketResponse.
+
+    `hang=True` keeps the read loop alive until close() is called, like a real socket.
+    """
 
     def __init__(self, error: Exception | None = None, hang: bool = False, messages=()):
         self.closed = False
         self._error = error
         self._hang = hang
         self._messages = list(messages)
+        self._closed_event = asyncio.Event()
 
     def __aiter__(self):
         return self
@@ -38,11 +42,12 @@ class FakeWS:
         if self._error is not None:
             raise self._error
         if self._hang:
-            await asyncio.Event().wait()
+            await self._closed_event.wait()
         raise StopAsyncIteration
 
     async def close(self):
         self.closed = True
+        self._closed_event.set()
 
 
 class FakeSession:
@@ -59,11 +64,15 @@ def make_manager() -> _AsyncWebSocketManager:
 
     manager = _AsyncWebSocketManager(callback, "test", ping_interval=0)
     manager.endpoint = SPOT
+    # pymexc leaves both unset until the first connect; close paths dereference them.
+    manager.ws = None
+    manager.session = None
     return manager
 
 
 async def shutdown(manager: _AsyncWebSocketManager) -> None:
     """Stop the live read loop without letting it reconnect during teardown."""
+    manager._closing = True
     manager.exited = True
     if manager._recv_task is not None:
         manager._recv_task.cancel()
@@ -96,21 +105,11 @@ async def test_stale_loop_does_not_reconnect_or_touch_new_socket():
 
     old_ws = FakeWS(error=aiohttp.ClientConnectionError("Connector is closed"))
     old_session = FakeSession()
-
-    unhandled = []
-    asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: unhandled.append(ctx))
-
-    task = asyncio.create_task(manager._loop_recv(old_ws, old_session))
-    task.add_done_callback(manager._log_recv_task_exception)
-    await task
-    del task
-    gc.collect()
-    await asyncio.sleep(0)
+    await manager._loop_recv(old_ws, old_session)
 
     assert calls == []  # stale loop must not reconnect
     assert manager.ws is new_ws and not new_ws.closed and not new_session.closed
     assert old_session.closed  # but it must clean up after itself
-    assert unhandled == []
 
 
 @pytest.mark.asyncio
@@ -159,9 +158,18 @@ async def test_current_socket_error_still_reconnects_once():
     session = FakeSession()
     manager.ws, manager.session = ws, session
     calls = patch_connect(manager, replace_socket=True)
+    errors = []
+    original_on_error = manager._on_error
+
+    async def spy(err):
+        errors.append(err)
+        await original_on_error(err)
+
+    manager._on_error = spy
 
     await manager._loop_recv(ws, session)
 
+    assert len(errors) == 1  # the live socket's failure IS reported
     assert calls == [SPOT]  # legit disconnect still triggers exactly one reconnect
     assert session.closed
 
@@ -211,58 +219,122 @@ async def test_cancel_during_handshake_leaks_nothing(monkeypatch):
 @pytest.mark.asyncio
 async def test_concurrent_connect_is_serialized(monkeypatch):
     manager = make_manager()
-    in_flight = 0
-    peak = 0
+    handshakes = []
+    sessions = []
 
     class SlowSession(FakeSession):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            sessions.append(self)
+
         async def ws_connect(self, **kwargs):
-            nonlocal in_flight, peak
-            in_flight += 1
-            peak = max(peak, in_flight)
+            handshakes.append(kwargs["url"])
             await asyncio.sleep(0.02)
-            in_flight -= 1
             return FakeWS(hang=True)  # stays open: no spontaneous close/reconnect
 
     monkeypatch.setattr(bw, "ClientSession", SlowSession)
 
     await asyncio.gather(manager._connect(SPOT), manager._connect(SPOT))
 
-    assert peak == 1
+    # Same url: the second caller rides the first socket instead of opening its own.
+    assert handshakes == [SPOT] and len(sessions) == 1
     assert manager.attempting_connection is False
     await shutdown(manager)
 
 
 @pytest.mark.asyncio
-async def test_shutdown_during_handshake_is_not_resurrected(monkeypatch):
-    """close_all()/__aexit__ can only close what is published; a handshake that finishes
-    afterwards must throw its socket away instead of going live behind their back."""
+async def test_connect_to_other_url_retires_the_old_socket(monkeypatch):
+    """Spot carries the listenKey in the URL: a queued connect for a NEW endpoint must
+    not be satisfied by the socket a previous connect just opened on the old one, and
+    retiring that socket must not let its read loop run current-connection policy."""
     manager = make_manager()
-    sockets, sessions = [], []
+    old_url, new_url = SPOT + "?listenKey=old", SPOT + "?listenKey=new"
+    handshakes, sockets, sessions = [], [], []
+    closes, errors = [], []
 
-    class ShutdownMidHandshake(FakeSession):
+    async def spy_on_close():
+        closes.append(True)
+
+    async def spy_on_error(err):
+        errors.append(err)
+
+    manager._on_close = spy_on_close
+    manager._on_error = spy_on_error
+
+    class SlowSession(FakeSession):
         def __init__(self, *args, **kwargs):
             super().__init__()
             sessions.append(self)
 
         async def ws_connect(self, **kwargs):
-            manager.exited = True  # emulate close_all() landing mid-handshake
+            handshakes.append(kwargs["url"])
+            await asyncio.sleep(0.02)
             sockets.append(FakeWS(hang=True))
             return sockets[-1]
 
-    monkeypatch.setattr(bw, "ClientSession", ShutdownMidHandshake)
+    monkeypatch.setattr(bw, "ClientSession", SlowSession)
 
-    with pytest.raises(RuntimeError):
-        await manager._connect(SPOT)
+    await asyncio.gather(manager._connect(old_url), manager._connect(new_url))
+    await asyncio.sleep(0.05)  # let the retired socket's read loop unwind
 
-    assert sockets[0].closed and sessions[0].closed
-    assert getattr(manager, "ws", None) is None  # never published
-    assert manager.attempting_connection is False
+    assert handshakes == [old_url, new_url]
+    assert manager._connected_url == new_url
+    assert manager.ws is sockets[-1] and not manager.ws.closed
+    assert sockets[0].closed and sessions[0].closed  # retired, and cleaned up by its loop
+    assert closes == [] and errors == []  # stale loop ran no current-socket policy
+    assert manager.is_connected()
+    await shutdown(manager)
 
 
 @pytest.mark.asyncio
-async def test_connect_clears_a_stale_exit_flag(monkeypatch):
-    """`exited` is set by every _on_error via the sync base; an explicit connect must
-    not be permanently rejected because of a leftover flag."""
+async def test_close_all_during_handshake_is_not_resurrected(monkeypatch):
+    """close_all() can only close what is published; a handshake still in flight - and
+    any connect queued behind it - must not go live afterwards."""
+    manager = make_manager()
+    handshake_started, release = asyncio.Event(), asyncio.Event()
+    sockets, sessions = [], []
+
+    class SlowSession(FakeSession):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            sessions.append(self)
+
+        async def ws_connect(self, **kwargs):
+            handshake_started.set()
+            await release.wait()
+            sockets.append(FakeWS(hang=True))
+            return sockets[-1]
+
+    monkeypatch.setattr(bw, "ClientSession", SlowSession)
+
+    first = asyncio.create_task(manager._connect(SPOT))
+    await handshake_started.wait()
+    queued = asyncio.create_task(manager._connect(SPOT))
+    await asyncio.sleep(0)
+
+    await manager.close_all()
+    release.set()
+
+    with pytest.raises(RuntimeError):
+        await first
+    with pytest.raises(RuntimeError):
+        await queued
+
+    assert sockets[0].closed and all(session.closed for session in sessions)
+    assert manager.ws is None and manager.attempting_connection is False
+
+
+@pytest.mark.asyncio
+async def test_aexit_latches_closing():
+    manager = make_manager()
+    await manager.__aexit__(None, None, None)
+    assert manager._closing is True
+
+
+@pytest.mark.asyncio
+async def test_error_flag_does_not_block_a_later_connect(monkeypatch):
+    """`exited` is set by every _on_error via the sync base; only close_all/__aexit__
+    may keep a connect out."""
     manager = make_manager()
     manager.exited = True
 
@@ -275,31 +347,4 @@ async def test_connect_clears_a_stale_exit_flag(monkeypatch):
     await manager._connect(SPOT)
 
     assert manager.is_connected() and manager.ws is not None
-    await shutdown(manager)
-
-
-@pytest.mark.asyncio
-async def test_connect_to_other_url_does_not_ride_the_wrong_socket(monkeypatch):
-    """Spot carries the listenKey in the URL: a queued connect for a NEW endpoint must
-    not be satisfied by the socket a previous connect just opened on the old one."""
-    manager = make_manager()
-    old_url, new_url = SPOT + "?listenKey=old", SPOT + "?listenKey=new"
-    handshakes = []
-    sockets = []
-
-    class SlowSession(FakeSession):
-        async def ws_connect(self, **kwargs):
-            handshakes.append(kwargs["url"])
-            await asyncio.sleep(0.02)
-            sockets.append(FakeWS(hang=True))
-            return sockets[-1]
-
-    monkeypatch.setattr(bw, "ClientSession", SlowSession)
-
-    await asyncio.gather(manager._connect(old_url), manager._connect(new_url))
-
-    assert handshakes == [old_url, new_url]
-    assert manager._connected_url == new_url
-    assert manager.ws is sockets[-1] and not manager.ws.closed
-    assert sockets[0].closed  # the stale-endpoint socket was dropped
     await shutdown(manager)

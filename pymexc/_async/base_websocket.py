@@ -73,6 +73,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
         # Serializes _connect so concurrent callers cannot race on self.ws/self.session.
         self._connect_lock = asyncio.Lock()
         self._connected_url: Optional[str] = None
+        # Sticky shutdown latch (close_all/__aexit__), unlike `exited` which the sync
+        # base sets on every error. Only __aenter__ reopens.
+        self._closing = False
 
         if ping_timeout:
             warnings.warn(
@@ -160,10 +163,8 @@ class _AsyncWebSocketManager(_WebSocketManager):
         self.endpoint = url
 
         try:
-            # An explicit connect request supersedes a previous exit() (which the sync
-            # base sets on every error); shutdown flipping it back while we handshake is
-            # what the post-handshake check below catches.
-            self.exited = False
+            if self._closing:
+                raise RuntimeError(f"WebSocket {self.ws_name} is closed")
 
             if self.is_connected() and self._connected_url != url:
                 # While we waited for the lock another connect published a socket on a
@@ -172,9 +173,15 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 logger.info(
                     f"WebSocket {self.ws_name} dropping socket on {self._connected_url} in favour of {url}"
                 )
+                # Retire BEFORE closing: its read loop must see itself as stale, or it
+                # would run current-socket policy (cancel the listenKey keep-alive via
+                # _on_close, latch `exited` via _on_error, or reconnect on its own).
+                old_ws = self.ws
+                self.ws = None
                 self.connected = False
-                if self.ws is not None and not self.ws.closed:
-                    await self.ws.close()
+                self._connected_url = None
+                if old_ws is not None and not old_ws.closed:
+                    await old_ws.close()
 
             # Attempt to connect for X seconds.
             retries = self.retries
@@ -203,7 +210,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
                     await session.close()
                     raise
 
-                if self.exited:
+                if self._closing:
                     # Shutdown ran while we were handshaking; publishing now would
                     # resurrect the connection behind close_all()/__aexit__'s back.
                     await ws.close()
@@ -296,6 +303,8 @@ class _AsyncWebSocketManager(_WebSocketManager):
         """
         Async context manager entry - ensures connection is established.
         """
+        self._closing = False
+
         # Connect if not already connected
         if not self.is_connected() and hasattr(self, 'endpoint'):
             await self._connect(self.endpoint)
@@ -305,7 +314,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
         """
         Async context manager exit - ensures proper cleanup.
         """
-        # Flag first: a handshake already in flight must not publish its socket after us.
+        # Latch first: a handshake already in flight must not publish its socket after
+        # us, and _on_close/_on_error must not reconnect while we tear down.
+        self._closing = True
         self.exited = True
 
         # Unsubscribe from all topics if the method exists (defined in subclasses)
@@ -339,7 +350,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
         This method is called automatically when using context manager,
         but can also be called manually.
         """
-        # Flag first: a handshake already in flight must not publish its socket after us.
+        # Latch first: a handshake already in flight must not publish its socket after
+        # us, and _on_close/_on_error must not reconnect while we tear down.
+        self._closing = True
         self.exited = True
 
         # First unsubscribe from everything
