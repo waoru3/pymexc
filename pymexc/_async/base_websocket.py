@@ -69,6 +69,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
         self.connected = False
         self.loop = loop or asyncio.get_event_loop()
         self._keep_alive_task: Optional[asyncio.Task] = None
+        self._recv_task: Optional[asyncio.Task] = None
+        # Serializes _connect so concurrent callers cannot race on self.ws/self.session.
+        self._connect_lock = asyncio.Lock()
 
         if ping_timeout:
             warnings.warn(
@@ -91,9 +94,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
         self.connected = True
         super()._on_open()
 
-    async def _loop_recv(self):
-        ws = self.ws
-        session = self.session
+    async def _loop_recv(self, ws: aiohttp.ClientWebSocketResponse, session: ClientSession):
+        """Read loop for ONE socket. `ws`/`session` are passed in explicitly so a loop
+        that outlives its socket never touches the connection that replaced it."""
         try:
             async for msg in ws:
                 if msg.type in [aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY]:
@@ -101,18 +104,26 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 elif msg.type == aiohttp.WSMsgType.CLOSE:
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    await self._on_error(msg)
+                    if self.ws is ws:
+                        await self._on_error(msg)
                     break
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
                     break
         except Exception as e:
-            await self._on_error(e)
-        finally:
+            # Only the loop of the CURRENT socket may drive error handling / reconnect;
+            # a stale loop reporting its own teardown would tear down the new socket.
             if self.ws is ws:
-                await self._on_close()
-            
-            if session and not session.closed:
-                await session.close()
+                await self._on_error(e)
+            else:
+                logger.debug(f"Ignoring error from stale {self.ws_name} socket: {e!r}")
+        finally:
+            # Nested so session.close() still runs when _on_close raises (it reconnects).
+            try:
+                if self.ws is ws:
+                    await self._on_close()
+            finally:
+                if session and not session.closed:
+                    await session.close()
 
     async def _on_message(self, message: str | bytes):
         """
@@ -128,6 +139,11 @@ class _AsyncWebSocketManager(_WebSocketManager):
         """
         Open websocket in a thread.
         """
+        # Serialize: a second connect must not overwrite self.ws/self.session mid-handshake.
+        async with self._connect_lock:
+            await self._connect_locked(url)
+
+    async def _connect_locked(self, url):
         async def resubscribe_to_topics():
             if not self.subscriptions:
                 # There are no subscriptions to resubscribe to, probably
@@ -142,52 +158,76 @@ class _AsyncWebSocketManager(_WebSocketManager):
 
         self.endpoint = url
 
-        # Attempt to connect for X seconds.
-        retries = self.retries
-        if retries == 0:
-            infinitely_reconnect = True
-        else:
-            infinitely_reconnect = False
+        try:
+            # Attempt to connect for X seconds.
+            retries = self.retries
+            if retries == 0:
+                infinitely_reconnect = True
+            else:
+                infinitely_reconnect = False
 
-        while (infinitely_reconnect or retries > 0) and not self.is_connected():
-            logger.info(f"WebSocket {self.ws_name} attempting connection...")
+            while (infinitely_reconnect or retries > 0) and not self.is_connected():
+                logger.info(f"WebSocket {self.ws_name} attempting connection...")
 
-            self.session = ClientSession()
-            timeout = ClientTimeout(total=60)
-            self.ws = await self.session.ws_connect(
-                url=url,
-                proxy=f"http://{self.proxy_settings['http_proxy_host']}:{self.proxy_settings['http_proxy_port']}"
-                if self.proxy_settings["http_proxy_host"]
-                else None,
-                proxy_auth=self.proxy_settings["http_proxy_auth"],
-                timeout=timeout,
-            )
-
-            # parse incoming messages
-            await self._on_open()
-            self.loop.create_task(self._loop_recv())
-
-            if not self.is_connected():
-                # If connection was not successful, raise error.
-                if not infinitely_reconnect and retries <= 0:
-                    self.exit()
-                    raise Exception(
-                        f"WebSocket {self.ws_name} ({self.endpoint}) connection "
-                        f"failed. Too many connection attempts. pymexc will no "
-                        f"longer try to reconnect."
+                # total bounds the HANDSHAKE only (the live socket is unaffected) and must
+                # stay below the caller's own subscribe deadline, so a slow handshake fails
+                # here instead of being cancelled mid-flight.
+                session = ClientSession(timeout=ClientTimeout(total=20))
+                try:
+                    ws = await session.ws_connect(
+                        url=url,
+                        proxy=f"http://{self.proxy_settings['http_proxy_host']}:{self.proxy_settings['http_proxy_port']}"
+                        if self.proxy_settings["http_proxy_host"]
+                        else None,
+                        proxy_auth=self.proxy_settings["http_proxy_auth"],
                     )
+                except BaseException:
+                    # Includes CancelledError: never leak a half-built session.
+                    await session.close()
+                    raise
 
-        logger.info(f"WebSocket {self.ws_name} connected")
+                # Publish only once both exist, then hand ownership to the read loop.
+                self.session = session
+                self.ws = ws
+                self._recv_task = self.loop.create_task(self._loop_recv(ws, session))
+                self._recv_task.add_done_callback(self._log_recv_task_exception)
 
-        # If given an api_key, authenticate.
-        if self.api_key and self.api_secret:
-            await self._auth()
+                # parse incoming messages
+                await self._on_open()
 
-        await resubscribe_to_topics()
-        await self._send_ping()
-        self._start_ping_loop()
+                if not self.is_connected():
+                    # If connection was not successful, raise error.
+                    if not infinitely_reconnect and retries <= 0:
+                        self.exit()
+                        raise Exception(
+                            f"WebSocket {self.ws_name} ({self.endpoint}) connection "
+                            f"failed. Too many connection attempts. pymexc will no "
+                            f"longer try to reconnect."
+                        )
 
-        self.attempting_connection = False
+            logger.info(f"WebSocket {self.ws_name} connected")
+
+            # If given an api_key, authenticate.
+            if self.api_key and self.api_secret:
+                await self._auth()
+
+            await resubscribe_to_topics()
+            await self._send_ping()
+            self._start_ping_loop()
+        finally:
+            # Must clear on failure/cancellation too, or _on_close/_on_error stay fenced
+            # out of reconnecting forever.
+            self.attempting_connection = False
+
+    @staticmethod
+    def _log_recv_task_exception(task: asyncio.Task) -> None:
+        """Retrieve the read loop's exception so it never surfaces as
+        'Task exception was never retrieved'. Nothing awaits this task."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(f"WebSocket receive loop ended with error: {exc!r}")
 
     async def _auth(self):
         msg = super()._auth(parse_only=True)
