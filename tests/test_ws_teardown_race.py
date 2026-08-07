@@ -425,3 +425,19 @@ async def test_reentry_clears_both_latches(monkeypatch):
     assert manager._closing is False
     assert manager.exited is False  # else _on_close would never reconnect again
     await shutdown(manager)
+
+
+@pytest.mark.asyncio
+async def test_protocol_error_frame_reconnects():
+    """aiohttp reports a protocol violation as an ERROR frame carrying WebSocketError."""
+    manager = make_manager()
+    failure = aiohttp.WebSocketError(aiohttp.WSCloseCode.PROTOCOL_ERROR, "bad frame")
+    ws = FakeWS(messages=[SimpleNamespace(type=aiohttp.WSMsgType.ERROR, data=failure)])
+    session = FakeSession()
+    manager.ws, manager.session = ws, session
+    calls = patch_connect(manager, replace_socket=True)
+
+    await manager._loop_recv(ws, session)
+
+    assert calls == [SPOT]
+    assert session.closed

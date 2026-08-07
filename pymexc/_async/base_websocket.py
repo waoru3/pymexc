@@ -277,7 +277,10 @@ class _AsyncWebSocketManager(_WebSocketManager):
         try:
             super()._on_error(error, parse_only=True)
         except Exception as exc:
-            if isinstance(error, (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError)) and exc is error:
+            # WebSocketError = protocol error on the live socket (delivered as an ERROR
+            # frame); it is a transport failure like the rest, not a caller bug.
+            recoverable = (aiohttp.ClientError, aiohttp.WebSocketError, ConnectionError, asyncio.TimeoutError)
+            if isinstance(error, recoverable) and exc is error:
                 logger.debug(
                     "Network error handled during async websocket operation: %s", error,
                 )
