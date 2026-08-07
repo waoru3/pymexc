@@ -68,7 +68,22 @@ class _AsyncWebSocketManager(_WebSocketManager):
         )
         self.connected = False
         self.loop = loop or asyncio.get_event_loop()
+        # pymexc left both unset until the first connect; the teardown paths below
+        # dereference them, so define them up front.
+        self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
+        self.session: Optional[ClientSession] = None
         self._keep_alive_task: Optional[asyncio.Task] = None
+        self._recv_task: Optional[asyncio.Task] = None
+        # Serializes _connect so concurrent callers cannot race on self.ws/self.session.
+        self._connect_lock = asyncio.Lock()
+        self._connected_url: Optional[str] = None
+        # Subscription messages already sent on the current socket (reset per socket).
+        self._sent_subscriptions: List[dict] = []
+        # True once the current socket finished auth + replay + ping startup.
+        self._setup_complete = False
+        # Sticky shutdown latch (close_all/__aexit__), unlike `exited` which the sync
+        # base sets on every error. Only __aenter__ reopens.
+        self._closing = False
 
         if ping_timeout:
             warnings.warn(
@@ -91,9 +106,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
         self.connected = True
         super()._on_open()
 
-    async def _loop_recv(self):
-        ws = self.ws
-        session = self.session
+    async def _loop_recv(self, ws: aiohttp.ClientWebSocketResponse, session: ClientSession):
+        """Read loop for ONE socket. `ws`/`session` are passed in explicitly so a loop
+        that outlives its socket never touches the connection that replaced it."""
         try:
             async for msg in ws:
                 if msg.type in [aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY]:
@@ -101,18 +116,28 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 elif msg.type == aiohttp.WSMsgType.CLOSE:
                     break
                 elif msg.type == aiohttp.WSMsgType.ERROR:
-                    await self._on_error(msg)
+                    if self.ws is ws:
+                        # aiohttp puts the exception in .data; the message itself is not
+                        # raisable and would derail the handler.
+                        await self._on_error(msg.data)
                     break
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
                     break
         except Exception as e:
-            await self._on_error(e)
-        finally:
+            # Only the loop of the CURRENT socket may drive error handling / reconnect;
+            # a stale loop reporting its own teardown would tear down the new socket.
             if self.ws is ws:
-                await self._on_close()
-            
-            if session and not session.closed:
-                await session.close()
+                await self._on_error(e)
+            else:
+                logger.debug(f"Ignoring error from stale {self.ws_name} socket: {e!r}")
+        finally:
+            # Nested so session.close() still runs when _on_close raises (it reconnects).
+            try:
+                if self.ws is ws:
+                    await self._on_close()
+            finally:
+                if session and not session.closed:
+                    await session.close()
 
     async def _on_message(self, message: str | bytes):
         """
@@ -128,66 +153,140 @@ class _AsyncWebSocketManager(_WebSocketManager):
         """
         Open websocket in a thread.
         """
-        async def resubscribe_to_topics():
-            if not self.subscriptions:
-                # There are no subscriptions to resubscribe to, probably
-                # because this is a brand new WSS initialisation so there was
-                # no previous WSS connection.
-                return
+        # Serialize: a second connect must not overwrite self.ws/self.session mid-handshake.
+        async with self._connect_lock:
+            await self._connect_locked(url)
 
-            for subscription_message in self.subscriptions:
+    async def _connect_locked(self, url):
+        async def resubscribe_to_topics():
+            # Send only what the CURRENT socket has not seen yet. On a fresh socket that
+            # is everything; for a caller queued behind the lock it is just whatever was
+            # appended after the first caller's replay read the list.
+            # Drop entries for subscriptions that were unsubscribed since: they must be
+            # replayed again if they come back, and the ledger must not grow forever.
+            self._sent_subscriptions = [m for m in self._sent_subscriptions if m in self.subscriptions]
+
+            for subscription_message in list(self.subscriptions):
+                if subscription_message in self._sent_subscriptions:
+                    continue
                 await self.ws.send_json(subscription_message)
+                self._sent_subscriptions.append(subscription_message)
 
         self.attempting_connection = True
 
         self.endpoint = url
 
-        # Attempt to connect for X seconds.
-        retries = self.retries
-        if retries == 0:
-            infinitely_reconnect = True
-        else:
-            infinitely_reconnect = False
+        try:
+            if self._closing:
+                raise RuntimeError(f"WebSocket {self.ws_name} is closed")
 
-        while (infinitely_reconnect or retries > 0) and not self.is_connected():
-            logger.info(f"WebSocket {self.ws_name} attempting connection...")
+            if self.is_connected() and self._connected_url != url:
+                # While we waited for the lock another connect published a socket on a
+                # DIFFERENT endpoint (spot carries the listenKey in the URL). Riding it
+                # would send our subscriptions to the wrong endpoint, so drop it first.
+                logger.info(
+                    f"WebSocket {self.ws_name} dropping socket on {self._connected_url} in favour of {url}"
+                )
+                # Retire BEFORE closing: its read loop must see itself as stale, or it
+                # would run current-socket policy (cancel the listenKey keep-alive via
+                # _on_close, latch `exited` via _on_error, or reconnect on its own).
+                old_ws = self.ws
+                self.ws = None
+                self.connected = False
+                self._connected_url = None
+                if old_ws is not None and not old_ws.closed:
+                    await old_ws.close()
 
-            self.session = ClientSession()
-            timeout = ClientTimeout(total=60)
-            self.ws = await self.session.ws_connect(
-                url=url,
-                proxy=f"http://{self.proxy_settings['http_proxy_host']}:{self.proxy_settings['http_proxy_port']}"
-                if self.proxy_settings["http_proxy_host"]
-                else None,
-                proxy_auth=self.proxy_settings["http_proxy_auth"],
-                timeout=timeout,
-            )
+            if self.is_connected() and self._setup_complete:
+                # Same url, already set up: another connect did auth + replay + ping while
+                # we waited for the lock. Redoing them would duplicate all three - but a
+                # subscription appended since its replay still has to get across. If that
+                # connect FAILED partway, _setup_complete is false and we fall through to
+                # run the tail ourselves.
+                logger.debug(f"WebSocket {self.ws_name} already connected to {url}")
+                await resubscribe_to_topics()
+                return
 
-            # parse incoming messages
-            await self._on_open()
-            self.loop.create_task(self._loop_recv())
+            # Attempt to connect for X seconds.
+            retries = self.retries
+            if retries == 0:
+                infinitely_reconnect = True
+            else:
+                infinitely_reconnect = False
 
-            if not self.is_connected():
-                # If connection was not successful, raise error.
-                if not infinitely_reconnect and retries <= 0:
-                    self.exit()
-                    raise Exception(
-                        f"WebSocket {self.ws_name} ({self.endpoint}) connection "
-                        f"failed. Too many connection attempts. pymexc will no "
-                        f"longer try to reconnect."
+            while (infinitely_reconnect or retries > 0) and not self.is_connected():
+                logger.info(f"WebSocket {self.ws_name} attempting connection...")
+
+                # total bounds the HANDSHAKE only (the live socket is unaffected) and must
+                # stay below the caller's own subscribe deadline, so a slow handshake fails
+                # here instead of being cancelled mid-flight.
+                session = ClientSession(timeout=ClientTimeout(total=20))
+                try:
+                    ws = await session.ws_connect(
+                        url=url,
+                        proxy=f"http://{self.proxy_settings['http_proxy_host']}:{self.proxy_settings['http_proxy_port']}"
+                        if self.proxy_settings["http_proxy_host"]
+                        else None,
+                        proxy_auth=self.proxy_settings["http_proxy_auth"],
                     )
+                except BaseException:
+                    # Includes CancelledError: never leak a half-built session.
+                    await session.close()
+                    raise
 
-        logger.info(f"WebSocket {self.ws_name} connected")
+                if self._closing:
+                    # Shutdown ran while we were handshaking; publishing now would
+                    # resurrect the connection behind close_all()/__aexit__'s back.
+                    await ws.close()
+                    await session.close()
+                    raise RuntimeError(f"WebSocket {self.ws_name} was closed during connect")
 
-        # If given an api_key, authenticate.
-        if self.api_key and self.api_secret:
-            await self._auth()
+                # Publish only once both exist, then hand ownership to the read loop.
+                self.session = session
+                self.ws = ws
+                self._connected_url = url
+                self._sent_subscriptions = []
+                self._setup_complete = False
+                self._recv_task = self.loop.create_task(self._loop_recv(ws, session))
+                self._recv_task.add_done_callback(self._log_recv_task_exception)
 
-        await resubscribe_to_topics()
-        await self._send_ping()
-        self._start_ping_loop()
+                # parse incoming messages
+                await self._on_open()
 
-        self.attempting_connection = False
+                if not self.is_connected():
+                    # If connection was not successful, raise error.
+                    if not infinitely_reconnect and retries <= 0:
+                        self.exit()
+                        raise Exception(
+                            f"WebSocket {self.ws_name} ({self.endpoint}) connection "
+                            f"failed. Too many connection attempts. pymexc will no "
+                            f"longer try to reconnect."
+                        )
+
+            logger.info(f"WebSocket {self.ws_name} connected")
+
+            # If given an api_key, authenticate.
+            if self.api_key and self.api_secret:
+                await self._auth()
+
+            await resubscribe_to_topics()
+            await self._send_ping()
+            self._start_ping_loop()
+            self._setup_complete = True
+        finally:
+            # Must clear on failure/cancellation too, or _on_close/_on_error stay fenced
+            # out of reconnecting forever.
+            self.attempting_connection = False
+
+    @staticmethod
+    def _log_recv_task_exception(task: asyncio.Task) -> None:
+        """Retrieve the read loop's exception so it never surfaces as
+        'Task exception was never retrieved'. Nothing awaits this task."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(f"WebSocket receive loop ended with error: {exc!r}")
 
     async def _auth(self):
         msg = super()._auth(parse_only=True)
@@ -199,7 +298,10 @@ class _AsyncWebSocketManager(_WebSocketManager):
         try:
             super()._on_error(error, parse_only=True)
         except Exception as exc:
-            if isinstance(error, (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError)) and exc is error:
+            # WebSocketError = protocol error on the live socket (delivered as an ERROR
+            # frame); it is a transport failure like the rest, not a caller bug.
+            recoverable = (aiohttp.ClientError, aiohttp.WebSocketError, ConnectionError, asyncio.TimeoutError)
+            if isinstance(error, recoverable) and exc is error:
                 logger.debug(
                     "Network error handled during async websocket operation: %s", error,
                 )
@@ -207,7 +309,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 raise
 
         # Reconnect.
-        if self.restart_on_error and not self.attempting_connection:
+        if self.restart_on_error and not self.attempting_connection and not self._closing:
             self._reset()
             await self._connect(self.endpoint)
 
@@ -223,7 +325,7 @@ class _AsyncWebSocketManager(_WebSocketManager):
         
         # FIX: Trigger reconnection on graceful close (same as _on_error)
         # Only reconnect if not explicitly exited and restart_on_error is enabled
-        if self.restart_on_error and not self.attempting_connection and not self.exited:
+        if self.restart_on_error and not self.attempting_connection and not self.exited and not self._closing:
             self._reset()
             await self._connect(self.endpoint)
 
@@ -231,6 +333,9 @@ class _AsyncWebSocketManager(_WebSocketManager):
         """
         Async context manager entry - ensures connection is established.
         """
+        self._closing = False
+        self.exited = False
+
         # Connect if not already connected
         if not self.is_connected() and hasattr(self, 'endpoint'):
             await self._connect(self.endpoint)
@@ -240,9 +345,18 @@ class _AsyncWebSocketManager(_WebSocketManager):
         """
         Async context manager exit - ensures proper cleanup.
         """
+        # Latch first: a handshake already in flight must not publish its socket after
+        # us, and _on_close/_on_error must not reconnect while we tear down.
+        self._closing = True
+        self.exited = True
+
         # Unsubscribe from all topics if the method exists (defined in subclasses)
         if hasattr(self, 'unsubscribe_all'):
-            await self.unsubscribe_all()
+            try:
+                await self.unsubscribe_all()
+            except Exception as e:
+                # Never skip the closes below - the socket may already be gone.
+                logger.debug(f"unsubscribe_all during shutdown failed: {e}")
 
         # Close the websocket connection
         if self.ws and not self.ws.closed:
@@ -271,12 +385,17 @@ class _AsyncWebSocketManager(_WebSocketManager):
         This method is called automatically when using context manager,
         but can also be called manually.
         """
+        # Latch first: a handshake already in flight must not publish its socket after
+        # us, and _on_close/_on_error must not reconnect while we tear down.
+        self._closing = True
+        self.exited = True
+
         # First unsubscribe from everything
         if hasattr(self, 'unsubscribe_all'):
             try:
                 await self.unsubscribe_all()
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                logger.debug(f"Network error during unsubscribe_all: {e}")
+            except Exception as e:
+                logger.debug(f"unsubscribe_all during shutdown failed: {e}")
             except asyncio.CancelledError:
                 pass  # Task was cancelled, that's OK
 
@@ -388,6 +507,7 @@ class _FuturesWebSocketManager(_AsyncWebSocketManager):
 
         await self.ws.send_json(subscription_args)
         self.subscriptions.append(subscription_args)
+        self._sent_subscriptions.append(subscription_args)
         # Register callback once per topic (all symbols for same topic share callback)
         if normalized_topic not in self.callback_directory:
             self._set_callback(normalized_topic, callback)
@@ -557,6 +677,7 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
 
         await self.ws.send_json(subscription_args)
         self.subscriptions.append(subscription_args)
+        self._sent_subscriptions.append(subscription_args)
         # Register callback by topic (all symbols for same topic share callback)
         if topic not in self.callback_directory:
             self._set_callback(topic, callback)
