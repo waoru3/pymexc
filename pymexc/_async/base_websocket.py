@@ -533,16 +533,30 @@ class _FuturesWebSocketManager(_AsyncWebSocketManager):
                 logger.debug(f"Already subscribed to {topic} with params {params}, skipping")
                 return
 
-        while not self.is_connected():
-            # Wait until the connection is open before subscribing.
+        while not (self.is_connected() and self._setup_complete):
+            # Both, not either (TASK-29 D6): `connected` alone admits sends
+            # during the setup tail; `_setup_complete` alone stays True while
+            # bot recovery retires the socket being replaced.
             await asyncio.sleep(0.1)
 
-        await self.ws.send_json(subscription_args)
-        self.subscriptions.append(subscription_args)
-        self._sent_subscriptions.append(subscription_args)
-        # Register callback once per topic (all symbols for same topic share callback)
+        # Record intent BEFORE the send await (TASK-29 D6): a replacement
+        # socket's replay reads `subscriptions` and can run while our send is
+        # in flight - the desired entry and its callback must already be
+        # visible, or that replay misses this subscription entirely.
+        ws = self.ws  # pin: sent-state is per-socket
         if normalized_topic not in self.callback_directory:
             self._set_callback(normalized_topic, callback)
+        self.subscriptions.append(subscription_args)
+
+        # If this send raises, desired intent stays recorded and the next
+        # connect's replay delivers it; the caller still sees the error.
+        await ws.send_json(subscription_args)
+
+        # Sent state only if the send rode the still-current socket AND a
+        # racing replay has not already recorded it; otherwise the
+        # replacement's replay owns delivery and the ledger entry.
+        if self.ws is ws and subscription_args not in self._sent_subscriptions:
+            self._sent_subscriptions.append(subscription_args)
         self.last_subsctiption = normalized_topic
 
     async def unsubscribe(self, method: str | Callable) -> None:
@@ -708,16 +722,30 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
             "params": full_params,
         }
 
-        while not self.is_connected():
-            # Wait until the connection is open before subscribing.
+        while not (self.is_connected() and self._setup_complete):
+            # Both, not either (TASK-29 D6): `connected` alone admits sends
+            # during the setup tail; `_setup_complete` alone stays True while
+            # bot recovery retires the socket being replaced.
             await asyncio.sleep(0.1)
 
-        await self.ws.send_json(subscription_args)
-        self.subscriptions.append(subscription_args)
-        self._sent_subscriptions.append(subscription_args)
-        # Register callback by topic (all symbols for same topic share callback)
+        # Record intent BEFORE the send await (TASK-29 D6): a replacement
+        # socket's replay reads `subscriptions` and can run while our send is
+        # in flight - the desired entry and its callback must already be
+        # visible, or that replay misses this subscription entirely.
+        ws = self.ws  # pin: sent-state is per-socket
         if topic not in self.callback_directory:
             self._set_callback(topic, callback)
+        self.subscriptions.append(subscription_args)
+
+        # If this send raises, desired intent stays recorded and the next
+        # connect's replay delivers it; the caller still sees the error.
+        await ws.send_json(subscription_args)
+
+        # Sent state only if the send rode the still-current socket AND a
+        # racing replay has not already recorded it; otherwise the
+        # replacement's replay owns delivery and the ledger entry.
+        if self.ws is ws and subscription_args not in self._sent_subscriptions:
+            self._sent_subscriptions.append(subscription_args)
         self.last_subsctiption = topic
 
     async def unsubscribe(self, *topics: str | Callable):

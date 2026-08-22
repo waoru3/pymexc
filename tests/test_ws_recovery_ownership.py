@@ -361,3 +361,183 @@ async def test_keep_alive_loop_closes_http_sessions():
         # The last request may be cancelled after construction but before its finally.
         instances[0].session.close.assert_awaited_once()
         instances[1].session.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------- D6
+
+
+class SwappingWS(FakeWS):
+    """send_json succeeds, but the manager's socket is swapped mid-send - the
+    shape of a bot-driven rebuild racing an in-flight subscribe."""
+
+    def __init__(self, manager, replacement):
+        super().__init__()
+        self._manager = manager
+        self._replacement = replacement
+
+    async def send_json(self, message):
+        await super().send_json(message)
+        self._manager.ws = self._replacement
+
+
+async def noop_callback(_message):
+    return None
+
+
+@pytest.mark.asyncio
+async def test_futures_subscribe_waits_for_setup_complete():
+    manager = make_manager(cls=_FuturesWebSocketManager)
+    manager.ws = FakeWS()
+    manager.connected = True
+    manager._setup_complete = False
+
+    subscribe_task = asyncio.create_task(
+        manager.subscribe("sub.ticker", noop_callback, {"symbol": "BTC_USDT"})
+    )
+    await asyncio.sleep(0.3)
+    assert manager.ws.sent == []  # connected alone must not admit the send
+
+    manager._setup_complete = True
+    await asyncio.wait_for(subscribe_task, timeout=2)
+    assert manager.ws.sent == [{"method": "sub.ticker", "param": {"symbol": "BTC_USDT"}}]
+
+
+@pytest.mark.asyncio
+async def test_spot_subscribe_waits_for_setup_complete():
+    manager = make_manager(cls=_SpotWebSocketManager, proto=False)
+    manager.ws = FakeWS()
+    manager.connected = True
+    manager._setup_complete = False
+
+    subscribe_task = asyncio.create_task(
+        manager.subscribe("public.deals", noop_callback, [{"symbol": "BTCUSDT"}])
+    )
+    await asyncio.sleep(0.3)
+    assert manager.ws.sent == []
+
+    manager._setup_complete = True
+    await asyncio.wait_for(subscribe_task, timeout=2)
+    assert manager.ws.sent == [
+        {"method": "SUBSCRIPTION", "params": ["spot@public.deals.v3.api@BTCUSDT"]}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_futures_raced_subscribe_records_desired_but_not_sent():
+    manager = make_manager(cls=_FuturesWebSocketManager)
+    replacement = FakeWS()
+    manager.ws = SwappingWS(manager, replacement)
+    manager.connected = True
+    manager._setup_complete = True
+
+    await manager.subscribe("sub.ticker", noop_callback, {"symbol": "BTC_USDT"})
+
+    args = {"method": "sub.ticker", "param": {"symbol": "BTC_USDT"}}
+    assert args in manager.subscriptions  # desired state survives the swap
+    assert args not in manager._sent_subscriptions  # sent state is per-socket
+    # callback registered despite the swap: replay can never deliver to a
+    # topic without a callback
+    assert manager._topic("sub.ticker") in manager.callback_directory
+
+
+@pytest.mark.asyncio
+async def test_spot_raced_subscribe_records_desired_but_not_sent():
+    manager = make_manager(cls=_SpotWebSocketManager, proto=False)
+    replacement = FakeWS()
+    manager.ws = SwappingWS(manager, replacement)
+    manager.connected = True
+    manager._setup_complete = True
+
+    await manager.subscribe("public.deals", noop_callback, [{"symbol": "BTCUSDT"}])
+
+    args = {"method": "SUBSCRIPTION", "params": ["spot@public.deals.v3.api@BTCUSDT"]}
+    assert args in manager.subscriptions
+    assert args not in manager._sent_subscriptions
+    assert "public.deals" in manager.callback_directory
+
+
+@pytest.mark.asyncio
+async def test_replay_during_send_delivers_presend_intent(monkeypatch):
+    """The hard interleaving: a full bot-style rebuild (retire + _connect +
+    replay) completes WHILE the original send is still awaited. Replay must
+    already see the desired subscription and deliver it on the replacement
+    socket - this is exactly why intent is recorded before the send."""
+    manager = make_manager(cls=_FuturesWebSocketManager)
+    new_ws = FakeWS()
+
+    class ReplaySession:
+        def __init__(self, *a, **k):
+            self.closed = False
+
+        async def ws_connect(self, *a, **k):
+            return new_ws
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(bw, "ClientSession", ReplaySession)
+
+    class RebuildDuringSendWS(FakeWS):
+        async def send_json(self, message):
+            await super().send_json(message)
+            # bot recovery retires this socket and completes a reconnect
+            # before the send returns
+            manager.connected = False
+            manager.ws = None
+            manager._connected_url = None
+            manager._setup_complete = False
+            await manager._connect(SPOT)
+
+    manager.ws = RebuildDuringSendWS()
+    manager.connected = True
+    manager._setup_complete = True
+
+    await manager.subscribe("sub.ticker", noop_callback, {"symbol": "BTC_USDT"})
+
+    args = {"method": "sub.ticker", "param": {"symbol": "BTC_USDT"}}
+    assert args in new_ws.sent  # replay delivered it
+    assert manager.subscriptions.count(args) == 1
+    assert manager._sent_subscriptions.count(args) == 1  # replay's entry, no duplicate
+    assert manager._topic("sub.ticker") in manager.callback_directory
+    await drain(manager)
+
+
+@pytest.mark.asyncio
+async def test_replacement_socket_replay_delivers_raced_subscription(monkeypatch):
+    """The lazier interleaving: the swap happens during the send but the
+    rebuild's _connect runs only LATER - the desired-but-unsent entry must be
+    delivered by that later connect's replay."""
+    manager = make_manager(cls=_FuturesWebSocketManager)
+    replacement = FakeWS()
+    manager.ws = SwappingWS(manager, replacement)
+    manager.connected = True
+    manager._setup_complete = True
+
+    await manager.subscribe("sub.ticker", noop_callback, {"symbol": "BTC_USDT"})
+    args = {"method": "sub.ticker", "param": {"symbol": "BTC_USDT"}}
+    assert args not in manager._sent_subscriptions
+
+    new_ws = FakeWS()
+
+    class ReplaySession:
+        def __init__(self, *a, **k):
+            self.closed = False
+
+        async def ws_connect(self, *a, **k):
+            return new_ws
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(bw, "ClientSession", ReplaySession)
+    # the bot-style rebuild retires the old socket state before reconnecting
+    manager.connected = False
+    manager.ws = None
+    manager._connected_url = None
+    manager._setup_complete = False
+
+    await manager._connect(SPOT)
+
+    assert args in new_ws.sent
+    assert args in manager._sent_subscriptions
+    await drain(manager)
