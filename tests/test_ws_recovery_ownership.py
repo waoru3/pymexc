@@ -196,3 +196,113 @@ async def test_exit_from_within_ping_task_does_not_self_cancel():
     assert calls
     assert manager._ping_task.cancelling() == 0
     manager._ping_task.cancel()
+
+
+# ---------------------------------------------------------------- D4
+
+
+@pytest.mark.asyncio
+async def test_connect_makes_exactly_one_attempt_on_handshake_failure(monkeypatch):
+    """Characterization: the old `while` never retried (no retries decrement,
+    ws_connect failure re-raised). This pins the single-attempt contract so the
+    loop deletion cannot regress it."""
+    sessions = []
+
+    class RefusingSession:
+        def __init__(self, *args, **kwargs):
+            self.closed = False
+            sessions.append(self)
+
+        async def ws_connect(self, *args, **kwargs):
+            raise aiohttp.ClientError("handshake refused")
+
+        async def close(self):
+            self.closed = True
+
+    manager = make_manager()
+    monkeypatch.setattr(bw, "ClientSession", RefusingSession)
+
+    with pytest.raises(aiohttp.ClientError):
+        await manager._connect(SPOT)
+
+    assert len(sessions) == 1
+    assert sessions[0].closed is True
+    assert manager.is_connected() is False
+
+
+@pytest.mark.asyncio
+async def test_setup_tail_failure_retires_partial_socket(monkeypatch):
+    """connected=True is published at socket open, before auth/replay/ping. If
+    that tail fails, the partial socket must be retired - no more
+    'connected=True but unusable' residue."""
+    sessions = []
+
+    class HappySession:
+        def __init__(self, *args, **kwargs):
+            self.closed = False
+            self.ws = FakeWS()
+            sessions.append(self)
+
+        async def ws_connect(self, *args, **kwargs):
+            return self.ws
+
+        async def close(self):
+            self.closed = True
+
+    manager = make_manager(api_key="k", api_secret="s")
+    monkeypatch.setattr(bw, "ClientSession", HappySession)
+
+    async def failing_auth():
+        raise aiohttp.ClientError("auth failed")
+
+    manager._auth = failing_auth
+
+    with pytest.raises(aiohttp.ClientError):
+        await manager._connect(SPOT)
+
+    assert manager.is_connected() is False
+    assert manager.ws is None
+    assert manager._connected_url is None
+    assert manager._setup_complete is False
+    assert sessions[0].ws.closed is True
+    assert sessions[0].closed is True
+    await drain(manager)
+
+
+@pytest.mark.asyncio
+async def test_setup_ping_transport_failure_retires_partial_socket(monkeypatch):
+    """_send_ping swallows transport errors into _on_error() (which exits)
+    instead of raising, so the retirement must be reached via the
+    is_connected() re-check after the ping - otherwise _setup_complete is left
+    True on a dead published socket."""
+    sessions = []
+
+    class PingFailWS(FakeWS):
+        async def send_str(self, message):
+            raise aiohttp.ClientError("ping send failed")
+
+    class HappySession:
+        def __init__(self, *args, **kwargs):
+            self.closed = False
+            self.ws = PingFailWS()
+            sessions.append(self)
+
+        async def ws_connect(self, *args, **kwargs):
+            return self.ws
+
+        async def close(self):
+            self.closed = True
+
+    manager = make_manager(ping_interval=20)
+    monkeypatch.setattr(bw, "ClientSession", HappySession)
+
+    with pytest.raises(RuntimeError):
+        await manager._connect(SPOT)
+
+    assert manager.is_connected() is False
+    assert manager.ws is None
+    assert manager._connected_url is None
+    assert manager._setup_complete is False
+    assert sessions[0].ws.closed is True
+    assert sessions[0].closed is True
+    await drain(manager)

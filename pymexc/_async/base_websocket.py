@@ -166,7 +166,11 @@ class _AsyncWebSocketManager(_WebSocketManager):
 
     async def _connect(self, url):
         """
-        Open websocket in a thread.
+        Open the websocket: ONE attempt per call.
+
+        `retries` is accepted for API compatibility but does not retry here;
+        reconnect pacing belongs to the caller (TASK-29 D4 - the old retry
+        loop never decremented and a failed handshake re-raised immediately).
         """
         # Serialize: a second connect must not overwrite self.ws/self.session mid-handshake.
         async with self._connect_lock:
@@ -222,71 +226,77 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 await resubscribe_to_topics()
                 return
 
-            # Attempt to connect for X seconds.
-            retries = self.retries
-            if retries == 0:
-                infinitely_reconnect = True
-            else:
-                infinitely_reconnect = False
+            # One attempt per call (TASK-29 D4): reconnect pacing belongs to the
+            # caller. `retries` is kept on the constructor for API compatibility
+            # but no longer drives a loop here.
+            logger.info(f"WebSocket {self.ws_name} attempting connection...")
 
-            while (infinitely_reconnect or retries > 0) and not self.is_connected():
-                logger.info(f"WebSocket {self.ws_name} attempting connection...")
+            # total bounds the HANDSHAKE only (the live socket is unaffected) and must
+            # stay below the caller's own subscribe deadline, so a slow handshake fails
+            # here instead of being cancelled mid-flight.
+            session = ClientSession(timeout=ClientTimeout(total=20))
+            try:
+                ws = await session.ws_connect(
+                    url=url,
+                    proxy=f"http://{self.proxy_settings['http_proxy_host']}:{self.proxy_settings['http_proxy_port']}"
+                    if self.proxy_settings["http_proxy_host"]
+                    else None,
+                    proxy_auth=self.proxy_settings["http_proxy_auth"],
+                )
+            except BaseException:
+                # Includes CancelledError: never leak a half-built session.
+                await session.close()
+                raise
 
-                # total bounds the HANDSHAKE only (the live socket is unaffected) and must
-                # stay below the caller's own subscribe deadline, so a slow handshake fails
-                # here instead of being cancelled mid-flight.
-                session = ClientSession(timeout=ClientTimeout(total=20))
-                try:
-                    ws = await session.ws_connect(
-                        url=url,
-                        proxy=f"http://{self.proxy_settings['http_proxy_host']}:{self.proxy_settings['http_proxy_port']}"
-                        if self.proxy_settings["http_proxy_host"]
-                        else None,
-                        proxy_auth=self.proxy_settings["http_proxy_auth"],
-                    )
-                except BaseException:
-                    # Includes CancelledError: never leak a half-built session.
-                    await session.close()
-                    raise
+            if self._closing:
+                # Shutdown ran while we were handshaking; publishing now would
+                # resurrect the connection behind close_all()/__aexit__'s back.
+                await ws.close()
+                await session.close()
+                raise RuntimeError(f"WebSocket {self.ws_name} was closed during connect")
 
-                if self._closing:
-                    # Shutdown ran while we were handshaking; publishing now would
-                    # resurrect the connection behind close_all()/__aexit__'s back.
-                    await ws.close()
-                    await session.close()
-                    raise RuntimeError(f"WebSocket {self.ws_name} was closed during connect")
+            # Publish only once both exist, then hand ownership to the read loop.
+            self.session = session
+            self.ws = ws
+            self._connected_url = url
+            self._sent_subscriptions = []
+            self._setup_complete = False
+            self._recv_task = self.loop.create_task(self._loop_recv(ws, session))
+            self._recv_task.add_done_callback(self._log_recv_task_exception)
 
-                # Publish only once both exist, then hand ownership to the read loop.
-                self.session = session
-                self.ws = ws
-                self._connected_url = url
-                self._sent_subscriptions = []
-                self._setup_complete = False
-                self._recv_task = self.loop.create_task(self._loop_recv(ws, session))
-                self._recv_task.add_done_callback(self._log_recv_task_exception)
-
-                # parse incoming messages
-                await self._on_open()
-
-                if not self.is_connected():
-                    # If connection was not successful, raise error.
-                    if not infinitely_reconnect and retries <= 0:
-                        self.exit()
-                        raise Exception(
-                            f"WebSocket {self.ws_name} ({self.endpoint}) connection "
-                            f"failed. Too many connection attempts. pymexc will no "
-                            f"longer try to reconnect."
-                        )
+            # parse incoming messages
+            await self._on_open()
 
             logger.info(f"WebSocket {self.ws_name} connected")
 
-            # If given an api_key, authenticate.
-            if self.api_key and self.api_secret:
-                await self._auth()
+            try:
+                # If given an api_key, authenticate.
+                if self.api_key and self.api_secret:
+                    await self._auth()
 
-            await resubscribe_to_topics()
-            await self._send_ping()
-            self._start_ping_loop()
+                await resubscribe_to_topics()
+                await self._send_ping()
+                if not self.is_connected():
+                    # _send_ping swallows transport errors into _on_error() (which
+                    # exits) instead of raising; surface that as a setup failure so
+                    # the retirement below runs (TASK-29 D4).
+                    raise RuntimeError(f"WebSocket {self.ws_name} setup ping failed")
+                self._start_ping_loop()
+            except BaseException:
+                # Setup tail failed after the socket was published: retire the
+                # partial socket so no is_connected() consumer sees a
+                # half-configured connection (TASK-29 D4). Retire BEFORE closing so
+                # the read loop sees itself as stale (same rule as the
+                # different-url drop above). _setup_complete is already False.
+                old_ws = self.ws
+                self.ws = None
+                self.connected = False
+                self._connected_url = None
+                if old_ws is not None and not old_ws.closed:
+                    await old_ws.close()
+                if not session.closed:
+                    await session.close()
+                raise
             self._setup_complete = True
         finally:
             # Must clear on failure/cancellation too, or _on_close/_on_error stay fenced
