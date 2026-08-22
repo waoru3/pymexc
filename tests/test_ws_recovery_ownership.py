@@ -401,6 +401,20 @@ async def test_futures_subscribe_waits_for_setup_complete():
     await asyncio.wait_for(subscribe_task, timeout=2)
     assert manager.ws.sent == [{"method": "sub.ticker", "param": {"symbol": "BTC_USDT"}}]
 
+    manager.connected = False
+    subscribe_task = asyncio.create_task(
+        manager.subscribe("sub.ticker", noop_callback, {"symbol": "ETH_USDT"})
+    )
+    await asyncio.sleep(0.3)
+    assert manager.ws.sent == [{"method": "sub.ticker", "param": {"symbol": "BTC_USDT"}}]
+
+    manager.connected = True
+    await asyncio.wait_for(subscribe_task, timeout=2)
+    assert manager.ws.sent == [
+        {"method": "sub.ticker", "param": {"symbol": "BTC_USDT"}},
+        {"method": "sub.ticker", "param": {"symbol": "ETH_USDT"}},
+    ]
+
 
 @pytest.mark.asyncio
 async def test_spot_subscribe_waits_for_setup_complete():
@@ -419,6 +433,22 @@ async def test_spot_subscribe_waits_for_setup_complete():
     await asyncio.wait_for(subscribe_task, timeout=2)
     assert manager.ws.sent == [
         {"method": "SUBSCRIPTION", "params": ["spot@public.deals.v3.api@BTCUSDT"]}
+    ]
+
+    manager.connected = False
+    subscribe_task = asyncio.create_task(
+        manager.subscribe("public.deals", noop_callback, [{"symbol": "ETHUSDT"}])
+    )
+    await asyncio.sleep(0.3)
+    assert manager.ws.sent == [
+        {"method": "SUBSCRIPTION", "params": ["spot@public.deals.v3.api@BTCUSDT"]}
+    ]
+
+    manager.connected = True
+    await asyncio.wait_for(subscribe_task, timeout=2)
+    assert manager.ws.sent == [
+        {"method": "SUBSCRIPTION", "params": ["spot@public.deals.v3.api@BTCUSDT"]},
+        {"method": "SUBSCRIPTION", "params": ["spot@public.deals.v3.api@ETHUSDT"]},
     ]
 
 
