@@ -194,5 +194,5 @@ async def test_exit_from_within_ping_task_does_not_self_cancel():
             break
 
     assert calls
-    assert not manager._ping_task.cancelled()
+    assert manager._ping_task.cancelling() == 0
     manager._ping_task.cancel()
