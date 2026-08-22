@@ -330,9 +330,17 @@ async def test_ensure_listen_key_closes_http_session():
 @pytest.mark.asyncio
 async def test_keep_alive_loop_closes_http_sessions():
     with patch("pymexc._async.spot.HTTP") as mock_http:
-        mock_http.return_value.create_listen_key = AsyncMock(return_value={"listenKey": "test_key"})
-        mock_http.return_value.keep_alive_listen_key = AsyncMock(return_value={"msg": "ok"})
-        mock_http.return_value.session.close = AsyncMock()
+        instances = []
+
+        def http_factory(*_args, **_kwargs):
+            http = AsyncMock()
+            http.create_listen_key = AsyncMock(return_value={"listenKey": "test_key"})
+            http.keep_alive_listen_key = AsyncMock(return_value={"msg": "ok"})
+            http.session.close = AsyncMock()
+            instances.append(http)
+            return http
+
+        mock_http.side_effect = http_factory
         ws_client = SpotWebSocket()
         ws_client.api_key = "k"
         ws_client.api_secret = "s"
@@ -347,7 +355,9 @@ async def test_keep_alive_loop_closes_http_sessions():
         except asyncio.CancelledError:
             pass
 
-        assert mock_http.return_value.create_listen_key.await_count == 1
-        assert mock_http.return_value.keep_alive_listen_key.await_count >= 1
-        # one close per HTTP() construction: 1 create + N renewals
-        assert mock_http.return_value.session.close.await_count >= 2
+        assert len(instances) >= 3
+        instances[0].create_listen_key.assert_awaited_once()
+        instances[1].keep_alive_listen_key.assert_awaited_once()
+        # The last request may be cancelled after construction but before its finally.
+        instances[0].session.close.assert_awaited_once()
+        instances[1].session.close.assert_awaited_once()
