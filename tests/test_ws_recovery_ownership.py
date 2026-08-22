@@ -306,3 +306,48 @@ async def test_setup_ping_transport_failure_retires_partial_socket(monkeypatch):
     assert sessions[0].ws.closed is True
     assert sessions[0].closed is True
     await drain(manager)
+
+
+# ---------------------------------------------------------------- D5
+
+
+@pytest.mark.asyncio
+async def test_ensure_listen_key_closes_http_session():
+    with patch("pymexc._async.spot.HTTP") as mock_http:
+        mock_http.return_value.create_listen_key = AsyncMock(return_value={"listenKey": "test_key"})
+        mock_http.return_value.session.close = AsyncMock()
+        ws_client = SpotWebSocket()  # keyless: no renewal task started
+        ws_client.api_key = "k"
+        ws_client.api_secret = "s"
+        ws_client.listenKey = None
+
+        await ws_client._ensure_listen_key()
+
+        assert ws_client.listenKey == "test_key"
+        mock_http.return_value.session.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_keep_alive_loop_closes_http_sessions():
+    with patch("pymexc._async.spot.HTTP") as mock_http:
+        mock_http.return_value.create_listen_key = AsyncMock(return_value={"listenKey": "test_key"})
+        mock_http.return_value.keep_alive_listen_key = AsyncMock(return_value={"msg": "ok"})
+        mock_http.return_value.session.close = AsyncMock()
+        ws_client = SpotWebSocket()
+        ws_client.api_key = "k"
+        ws_client.api_secret = "s"
+        ws_client.listenKey = None
+        ws_client._KEEP_ALIVE_INTERVAL_SECONDS = 0.01  # shadow the 55-min class attr
+
+        task = asyncio.create_task(ws_client._keep_alive_loop())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert mock_http.return_value.create_listen_key.await_count == 1
+        assert mock_http.return_value.keep_alive_listen_key.await_count >= 1
+        # one close per HTTP() construction: 1 create + N renewals
+        assert mock_http.return_value.session.close.await_count >= 2

@@ -2038,7 +2038,11 @@ class WebSocket(_SpotWebSocket):
         """
 
         if not self.listenKey:
-            auth = await HTTP(api_key=self.api_key, api_secret=self.api_secret).create_listen_key()
+            http = HTTP(api_key=self.api_key, api_secret=self.api_secret)
+            try:
+                auth = await http.create_listen_key()
+            finally:
+                await http.session.close()
             self.listenKey = auth.get("listenKey")
             logger.debug(f"create listenKey: {self.listenKey}")
 
@@ -2052,9 +2056,11 @@ class WebSocket(_SpotWebSocket):
             await asyncio.sleep(self._KEEP_ALIVE_INTERVAL_SECONDS)
 
             if self.listenKey:
-                resp = await HTTP(api_key=self.api_key, api_secret=self.api_secret).keep_alive_listen_key(
-                    self.listenKey
-                )
+                http = HTTP(api_key=self.api_key, api_secret=self.api_secret)
+                try:
+                    resp = await http.keep_alive_listen_key(self.listenKey)
+                finally:
+                    await http.session.close()
                 logger.debug(f"keep-alive listenKey - {self.listenKey}. Response: {resp}")
             else:
                 break
@@ -2258,7 +2264,11 @@ class WebSocket(_SpotWebSocket):
     async def _ensure_listen_key(self):
         """Ensure listenKey is available for private streams"""
         if not self.listenKey and self.api_key and self.api_secret:
-            auth = await HTTP(api_key=self.api_key, api_secret=self.api_secret).create_listen_key()
+            http = HTTP(api_key=self.api_key, api_secret=self.api_secret)
+            try:
+                auth = await http.create_listen_key()
+            finally:
+                await http.session.close()
             self.listenKey = auth.get("listenKey")
             if not self.listenKey:
                 raise Exception(f"ListenKey not found. Error: {auth}")

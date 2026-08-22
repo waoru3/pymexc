@@ -51,6 +51,7 @@ async def test_spot_websocket_no_blocking_sleep():
     with patch('pymexc._async.spot.HTTP') as mock_http:
         mock_http.return_value.create_listen_key = AsyncMock(return_value={'listenKey': 'test_key'})
         mock_http.return_value.keep_alive_listen_key = AsyncMock(return_value={'msg': 'success'})
+        mock_http.return_value.session.close = AsyncMock()
 
         ws = SpotWebSocket(api_key='test', api_secret='test')
 
