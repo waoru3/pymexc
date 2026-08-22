@@ -2016,7 +2016,7 @@ class WebSocket(_SpotWebSocket):
             extend_proto_body=extend_proto_body,
         )
         self.listenKey = listenKey
-        self._keep_alive_task = None  # Store task reference for cleanup
+        self._listen_key_renewal_task = None  # cancelled only in close_all/__aexit__
 
         super().__init__(**kwargs)
 
@@ -2025,7 +2025,7 @@ class WebSocket(_SpotWebSocket):
         # expiry window
         if api_key and api_secret:
             # setup keep-alive connection loop - store task for later cleanup
-            self._keep_alive_task = loop.create_task(self._keep_alive_loop())
+            self._listen_key_renewal_task = loop.create_task(self._keep_alive_loop())
 
     _KEEP_ALIVE_INTERVAL_SECONDS = 55 * 60
 

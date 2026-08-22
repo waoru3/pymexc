@@ -72,7 +72,11 @@ class _AsyncWebSocketManager(_WebSocketManager):
         # dereference them, so define them up front.
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.session: Optional[ClientSession] = None
-        self._keep_alive_task: Optional[asyncio.Task] = None
+        # Socket-scoped ping loop. The spot listenKey renewal task lives in its
+        # own slot (_listen_key_renewal_task, set by the spot client only):
+        # sharing one slot blocked the ping loop and let the first socket close
+        # kill renewal forever (TASK-29 D3).
+        self._ping_task: Optional[asyncio.Task] = None
         self._recv_task: Optional[asyncio.Task] = None
         # Serializes _connect so concurrent callers cannot race on self.ws/self.session.
         self._connect_lock = asyncio.Lock()
@@ -95,6 +99,17 @@ class _AsyncWebSocketManager(_WebSocketManager):
         Closes the websocket connection in an async-safe way.
         """
         self._cancel_ping_timer()
+        # Never self-cancel: _send_ping failure reaches exit() from INSIDE the
+        # ping task (via _on_error), and cancelling the current task would abort
+        # the restart_on_error reconnect that _on_error drives next. The explicit
+        # loop= keeps this sync method callable outside the loop too
+        # (current_task() without it raises via get_running_loop()).
+        if (
+            self._ping_task
+            and not self._ping_task.done()
+            and self._ping_task is not asyncio.current_task(loop=self.loop)
+        ):
+            self._ping_task.cancel()
         self.exited = True
         self.connected = False
         
@@ -315,10 +330,13 @@ class _AsyncWebSocketManager(_WebSocketManager):
 
     async def _on_close(self):
         self.connected = False
-        if self._keep_alive_task:
-            self._keep_alive_task.cancel()
+        # Ping is socket-scoped: it dies with the socket. listenKey renewal is
+        # account-scoped and must survive socket churn - it is cancelled only in
+        # close_all()/__aexit__ (TASK-29 D3).
+        if self._ping_task:
+            self._ping_task.cancel()
             try:
-                await self._keep_alive_task
+                await self._ping_task
             except asyncio.CancelledError:
                 pass
         super()._on_close()
@@ -366,13 +384,15 @@ class _AsyncWebSocketManager(_WebSocketManager):
         if self.session:
             await self.session.close()
 
-        # Cancel any background tasks
-        if hasattr(self, '_keep_alive_task') and self._keep_alive_task:
-            self._keep_alive_task.cancel()
-            try:
-                await self._keep_alive_task
-            except asyncio.CancelledError:
-                pass
+        # Client-terminal teardown: cancel the socket-scoped ping loop AND the
+        # account-scoped listenKey renewal (spot private client only).
+        for task in (self._ping_task, getattr(self, "_listen_key_renewal_task", None)):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         # Mark as disconnected
         self.connected = False
@@ -413,13 +433,15 @@ class _AsyncWebSocketManager(_WebSocketManager):
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 logger.debug(f"Network error closing session: {e}")
 
-        # Cancel background tasks
-        if hasattr(self, '_keep_alive_task') and self._keep_alive_task:
-            self._keep_alive_task.cancel()
-            try:
-                await self._keep_alive_task
-            except asyncio.CancelledError:
-                pass  # Expected when cancelling a task
+        # Client-terminal teardown: cancel the socket-scoped ping loop AND the
+        # account-scoped listenKey renewal (spot private client only).
+        for task in (self._ping_task, getattr(self, "_listen_key_renewal_task", None)):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         # Reset state
         self.connected = False
@@ -440,10 +462,10 @@ class _AsyncWebSocketManager(_WebSocketManager):
         if not self.ping_interval or self.ping_interval <= 0:
             return
 
-        if self._keep_alive_task and not self._keep_alive_task.done():
+        if self._ping_task and not self._ping_task.done():
             return
 
-        self._keep_alive_task = self.loop.create_task(self._ping_loop())
+        self._ping_task = self.loop.create_task(self._ping_loop())
 
     async def _ping_loop(self):
         try:
@@ -645,6 +667,11 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
             kwargs.pop("callback_function") if kwargs.get("callback_function") else self._handle_incoming_message
         )
         super().__init__(callback_function, ws_name, **kwargs)
+
+        # MEXC spot protocol pings are uppercase ({"method": "PING"}); futures
+        # is lowercase, so the override is scoped to spot only (TASK-29 D3).
+        # The sync client keeps the shared default untouched (TASK-238).
+        self.custom_ping_message = json.dumps({"method": "PING"})
 
         self.private_topics = ["account", "deals", "orders"]
 

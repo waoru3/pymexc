@@ -27,7 +27,9 @@ async def test_spot_websocket_context_manager():
         mock_http.return_value.keep_alive_listen_key = AsyncMock(return_value={'msg': 'success'})
 
         # Test context manager usage
-        async with SpotWebSocket(api_key='test', api_secret='test') as ws:
+        ws = SpotWebSocket(api_key='test', api_secret='test')
+        ws._connect = AsyncMock()  # offline: __aenter__ dials the real endpoint otherwise
+        async with ws:
             # Mock the connection
             ws.ws = AsyncMock()
             ws.session = AsyncMock()
@@ -39,7 +41,7 @@ async def test_spot_websocket_context_manager():
             assert hasattr(ws, '__aexit__')
 
         # After exiting context, cleanup should be done
-        assert ws._keep_alive_task is None or ws._keep_alive_task.cancelled()
+        assert ws._listen_key_renewal_task is None or ws._listen_key_renewal_task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -107,13 +109,19 @@ async def test_close_all_cleanup():
         ws.ws.closed = False
         ws.session = AsyncMock()
         ws.connected = True
-        # Create a proper awaitable mock for _keep_alive_task that stays running
+        # Create a proper awaitable mock for _listen_key_renewal_task that stays running
         async def mock_task():
             try:
                 await asyncio.sleep(100)  # Long-running task
             except asyncio.CancelledError:
                 pass
-        ws._keep_alive_task = asyncio.create_task(mock_task())
+        ws._listen_key_renewal_task = asyncio.create_task(mock_task())
+        async def mock_ping_task():
+            try:
+                await asyncio.sleep(100)
+            except asyncio.CancelledError:
+                pass
+        ws._ping_task = asyncio.create_task(mock_ping_task())
         await asyncio.sleep(0)  # Let the task start
 
         # Add mock unsubscribe_all
@@ -127,7 +135,8 @@ async def test_close_all_cleanup():
         ws.ws.close.assert_called_once()
         ws.session.close.assert_called_once()
         # Task should be done (either cancelled or finished)
-        assert ws._keep_alive_task.done()
+        assert ws._listen_key_renewal_task.done()
+        assert ws._ping_task.done()
         assert ws.connected == False
 
 
@@ -151,13 +160,13 @@ async def test_no_threading_in_async():
 
         ws = SpotWebSocket(api_key='test', api_secret='test')
 
-        # Verify _keep_alive_task is an asyncio Task, not a thread
-        if ws._keep_alive_task:
-            assert isinstance(ws._keep_alive_task, asyncio.Task)
+        # Verify _listen_key_renewal_task is an asyncio Task, not a thread
+        if ws._listen_key_renewal_task:
+            assert isinstance(ws._listen_key_renewal_task, asyncio.Task)
             # Clean up the task
-            ws._keep_alive_task.cancel()
+            ws._listen_key_renewal_task.cancel()
             try:
-                await ws._keep_alive_task
+                await ws._listen_key_renewal_task
             except asyncio.CancelledError:
                 pass
 
