@@ -72,7 +72,11 @@ class _AsyncWebSocketManager(_WebSocketManager):
         # dereference them, so define them up front.
         self.ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.session: Optional[ClientSession] = None
-        self._keep_alive_task: Optional[asyncio.Task] = None
+        # Socket-scoped ping loop. The spot listenKey renewal task lives in its
+        # own slot (_listen_key_renewal_task, set by the spot client only):
+        # sharing one slot blocked the ping loop and let the first socket close
+        # kill renewal forever (TASK-29 D3).
+        self._ping_task: Optional[asyncio.Task] = None
         self._recv_task: Optional[asyncio.Task] = None
         # Serializes _connect so concurrent callers cannot race on self.ws/self.session.
         self._connect_lock = asyncio.Lock()
@@ -95,6 +99,17 @@ class _AsyncWebSocketManager(_WebSocketManager):
         Closes the websocket connection in an async-safe way.
         """
         self._cancel_ping_timer()
+        # Never self-cancel: _send_ping failure reaches exit() from INSIDE the
+        # ping task (via _on_error), and cancelling the current task would abort
+        # the restart_on_error reconnect that _on_error drives next. The explicit
+        # loop= keeps this sync method callable outside the loop too
+        # (current_task() without it raises via get_running_loop()).
+        if (
+            self._ping_task
+            and not self._ping_task.done()
+            and self._ping_task is not asyncio.current_task(loop=self.loop)
+        ):
+            self._ping_task.cancel()
         self.exited = True
         self.connected = False
         
@@ -151,7 +166,11 @@ class _AsyncWebSocketManager(_WebSocketManager):
 
     async def _connect(self, url):
         """
-        Open websocket in a thread.
+        Open the websocket: ONE attempt per call.
+
+        `retries` is accepted for API compatibility but does not retry here;
+        reconnect pacing belongs to the caller (TASK-29 D4 - the old retry
+        loop never decremented and a failed handshake re-raised immediately).
         """
         # Serialize: a second connect must not overwrite self.ws/self.session mid-handshake.
         async with self._connect_lock:
@@ -207,71 +226,77 @@ class _AsyncWebSocketManager(_WebSocketManager):
                 await resubscribe_to_topics()
                 return
 
-            # Attempt to connect for X seconds.
-            retries = self.retries
-            if retries == 0:
-                infinitely_reconnect = True
-            else:
-                infinitely_reconnect = False
+            # One attempt per call (TASK-29 D4): reconnect pacing belongs to the
+            # caller. `retries` is kept on the constructor for API compatibility
+            # but no longer drives a loop here.
+            logger.info(f"WebSocket {self.ws_name} attempting connection...")
 
-            while (infinitely_reconnect or retries > 0) and not self.is_connected():
-                logger.info(f"WebSocket {self.ws_name} attempting connection...")
+            # total bounds the HANDSHAKE only (the live socket is unaffected) and must
+            # stay below the caller's own subscribe deadline, so a slow handshake fails
+            # here instead of being cancelled mid-flight.
+            session = ClientSession(timeout=ClientTimeout(total=20))
+            try:
+                ws = await session.ws_connect(
+                    url=url,
+                    proxy=f"http://{self.proxy_settings['http_proxy_host']}:{self.proxy_settings['http_proxy_port']}"
+                    if self.proxy_settings["http_proxy_host"]
+                    else None,
+                    proxy_auth=self.proxy_settings["http_proxy_auth"],
+                )
+            except BaseException:
+                # Includes CancelledError: never leak a half-built session.
+                await session.close()
+                raise
 
-                # total bounds the HANDSHAKE only (the live socket is unaffected) and must
-                # stay below the caller's own subscribe deadline, so a slow handshake fails
-                # here instead of being cancelled mid-flight.
-                session = ClientSession(timeout=ClientTimeout(total=20))
-                try:
-                    ws = await session.ws_connect(
-                        url=url,
-                        proxy=f"http://{self.proxy_settings['http_proxy_host']}:{self.proxy_settings['http_proxy_port']}"
-                        if self.proxy_settings["http_proxy_host"]
-                        else None,
-                        proxy_auth=self.proxy_settings["http_proxy_auth"],
-                    )
-                except BaseException:
-                    # Includes CancelledError: never leak a half-built session.
-                    await session.close()
-                    raise
+            if self._closing:
+                # Shutdown ran while we were handshaking; publishing now would
+                # resurrect the connection behind close_all()/__aexit__'s back.
+                await ws.close()
+                await session.close()
+                raise RuntimeError(f"WebSocket {self.ws_name} was closed during connect")
 
-                if self._closing:
-                    # Shutdown ran while we were handshaking; publishing now would
-                    # resurrect the connection behind close_all()/__aexit__'s back.
-                    await ws.close()
-                    await session.close()
-                    raise RuntimeError(f"WebSocket {self.ws_name} was closed during connect")
+            # Publish only once both exist, then hand ownership to the read loop.
+            self.session = session
+            self.ws = ws
+            self._connected_url = url
+            self._sent_subscriptions = []
+            self._setup_complete = False
+            self._recv_task = self.loop.create_task(self._loop_recv(ws, session))
+            self._recv_task.add_done_callback(self._log_recv_task_exception)
 
-                # Publish only once both exist, then hand ownership to the read loop.
-                self.session = session
-                self.ws = ws
-                self._connected_url = url
-                self._sent_subscriptions = []
-                self._setup_complete = False
-                self._recv_task = self.loop.create_task(self._loop_recv(ws, session))
-                self._recv_task.add_done_callback(self._log_recv_task_exception)
-
-                # parse incoming messages
-                await self._on_open()
-
-                if not self.is_connected():
-                    # If connection was not successful, raise error.
-                    if not infinitely_reconnect and retries <= 0:
-                        self.exit()
-                        raise Exception(
-                            f"WebSocket {self.ws_name} ({self.endpoint}) connection "
-                            f"failed. Too many connection attempts. pymexc will no "
-                            f"longer try to reconnect."
-                        )
+            # parse incoming messages
+            await self._on_open()
 
             logger.info(f"WebSocket {self.ws_name} connected")
 
-            # If given an api_key, authenticate.
-            if self.api_key and self.api_secret:
-                await self._auth()
+            try:
+                # If given an api_key, authenticate.
+                if self.api_key and self.api_secret:
+                    await self._auth()
 
-            await resubscribe_to_topics()
-            await self._send_ping()
-            self._start_ping_loop()
+                await resubscribe_to_topics()
+                await self._send_ping()
+                if not self.is_connected():
+                    # _send_ping swallows transport errors into _on_error() (which
+                    # exits) instead of raising; surface that as a setup failure so
+                    # the retirement below runs (TASK-29 D4).
+                    raise RuntimeError(f"WebSocket {self.ws_name} setup ping failed")
+                self._start_ping_loop()
+            except BaseException:
+                # Setup tail failed after the socket was published: retire the
+                # partial socket so no is_connected() consumer sees a
+                # half-configured connection (TASK-29 D4). Retire BEFORE closing so
+                # the read loop sees itself as stale (same rule as the
+                # different-url drop above). _setup_complete is already False.
+                old_ws = self.ws
+                self.ws = None
+                self.connected = False
+                self._connected_url = None
+                if old_ws is not None and not old_ws.closed:
+                    await old_ws.close()
+                if not session.closed:
+                    await session.close()
+                raise
             self._setup_complete = True
         finally:
             # Must clear on failure/cancellation too, or _on_close/_on_error stay fenced
@@ -315,10 +340,13 @@ class _AsyncWebSocketManager(_WebSocketManager):
 
     async def _on_close(self):
         self.connected = False
-        if self._keep_alive_task:
-            self._keep_alive_task.cancel()
+        # Ping is socket-scoped: it dies with the socket. listenKey renewal is
+        # account-scoped and must survive socket churn - it is cancelled only in
+        # close_all()/__aexit__ (TASK-29 D3).
+        if self._ping_task:
+            self._ping_task.cancel()
             try:
-                await self._keep_alive_task
+                await self._ping_task
             except asyncio.CancelledError:
                 pass
         super()._on_close()
@@ -366,13 +394,15 @@ class _AsyncWebSocketManager(_WebSocketManager):
         if self.session:
             await self.session.close()
 
-        # Cancel any background tasks
-        if hasattr(self, '_keep_alive_task') and self._keep_alive_task:
-            self._keep_alive_task.cancel()
-            try:
-                await self._keep_alive_task
-            except asyncio.CancelledError:
-                pass
+        # Client-terminal teardown: cancel the socket-scoped ping loop AND the
+        # account-scoped listenKey renewal (spot private client only).
+        for task in (self._ping_task, getattr(self, "_listen_key_renewal_task", None)):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         # Mark as disconnected
         self.connected = False
@@ -413,13 +443,15 @@ class _AsyncWebSocketManager(_WebSocketManager):
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 logger.debug(f"Network error closing session: {e}")
 
-        # Cancel background tasks
-        if hasattr(self, '_keep_alive_task') and self._keep_alive_task:
-            self._keep_alive_task.cancel()
-            try:
-                await self._keep_alive_task
-            except asyncio.CancelledError:
-                pass  # Expected when cancelling a task
+        # Client-terminal teardown: cancel the socket-scoped ping loop AND the
+        # account-scoped listenKey renewal (spot private client only).
+        for task in (self._ping_task, getattr(self, "_listen_key_renewal_task", None)):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         # Reset state
         self.connected = False
@@ -440,10 +472,10 @@ class _AsyncWebSocketManager(_WebSocketManager):
         if not self.ping_interval or self.ping_interval <= 0:
             return
 
-        if self._keep_alive_task and not self._keep_alive_task.done():
+        if self._ping_task and not self._ping_task.done():
             return
 
-        self._keep_alive_task = self.loop.create_task(self._ping_loop())
+        self._ping_task = self.loop.create_task(self._ping_loop())
 
     async def _ping_loop(self):
         try:
@@ -501,16 +533,35 @@ class _FuturesWebSocketManager(_AsyncWebSocketManager):
                 logger.debug(f"Already subscribed to {topic} with params {params}, skipping")
                 return
 
-        while not self.is_connected():
-            # Wait until the connection is open before subscribing.
+        while not (self.is_connected() and self._setup_complete):
+            # Both, not either (TASK-29 D6): `connected` alone admits sends
+            # during the setup tail; `_setup_complete` alone stays True while
+            # bot recovery retires the socket being replaced.
+            # No connect is in flight. A setup-tail failure retires the socket;
+            # it raises only to `_connect`'s caller, so nothing can satisfy this wait.
+            # Reconnect pacing belongs to that caller (TASK-29 D6 / PR #11 review).
+            if not self.is_connected() and not self.attempting_connection:
+                raise RuntimeError(f"WebSocket {self.ws_name} has no connection in flight")
             await asyncio.sleep(0.1)
 
-        await self.ws.send_json(subscription_args)
-        self.subscriptions.append(subscription_args)
-        self._sent_subscriptions.append(subscription_args)
-        # Register callback once per topic (all symbols for same topic share callback)
+        # Record intent BEFORE the send await (TASK-29 D6): a replacement
+        # socket's replay reads `subscriptions` and can run while our send is
+        # in flight - the desired entry and its callback must already be
+        # visible, or that replay misses this subscription entirely.
+        ws = self.ws  # pin: sent-state is per-socket
         if normalized_topic not in self.callback_directory:
             self._set_callback(normalized_topic, callback)
+        self.subscriptions.append(subscription_args)
+
+        # If this send raises, desired intent stays recorded and the next
+        # connect's replay delivers it; the caller still sees the error.
+        await ws.send_json(subscription_args)
+
+        # Sent state only if the send rode the still-current socket AND a
+        # racing replay has not already recorded it; otherwise the
+        # replacement's replay owns delivery and the ledger entry.
+        if self.ws is ws and subscription_args not in self._sent_subscriptions:
+            self._sent_subscriptions.append(subscription_args)
         self.last_subsctiption = normalized_topic
 
     async def unsubscribe(self, method: str | Callable) -> None:
@@ -646,6 +697,11 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
         )
         super().__init__(callback_function, ws_name, **kwargs)
 
+        # MEXC spot protocol pings are uppercase ({"method": "PING"}); futures
+        # is lowercase, so the override is scoped to spot only (TASK-29 D3).
+        # The sync client keeps the shared default untouched (TASK-238).
+        self.custom_ping_message = json.dumps({"method": "PING"})
+
         self.private_topics = ["account", "deals", "orders"]
 
     async def subscribe(self, topic: str, callback: Callable, params_list: list, interval: str = None):
@@ -671,16 +727,35 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
             "params": full_params,
         }
 
-        while not self.is_connected():
-            # Wait until the connection is open before subscribing.
+        while not (self.is_connected() and self._setup_complete):
+            # Both, not either (TASK-29 D6): `connected` alone admits sends
+            # during the setup tail; `_setup_complete` alone stays True while
+            # bot recovery retires the socket being replaced.
+            # No connect is in flight. A setup-tail failure retires the socket;
+            # it raises only to `_connect`'s caller, so nothing can satisfy this wait.
+            # Reconnect pacing belongs to that caller (TASK-29 D6 / PR #11 review).
+            if not self.is_connected() and not self.attempting_connection:
+                raise RuntimeError(f"WebSocket {self.ws_name} has no connection in flight")
             await asyncio.sleep(0.1)
 
-        await self.ws.send_json(subscription_args)
-        self.subscriptions.append(subscription_args)
-        self._sent_subscriptions.append(subscription_args)
-        # Register callback by topic (all symbols for same topic share callback)
+        # Record intent BEFORE the send await (TASK-29 D6): a replacement
+        # socket's replay reads `subscriptions` and can run while our send is
+        # in flight - the desired entry and its callback must already be
+        # visible, or that replay misses this subscription entirely.
+        ws = self.ws  # pin: sent-state is per-socket
         if topic not in self.callback_directory:
             self._set_callback(topic, callback)
+        self.subscriptions.append(subscription_args)
+
+        # If this send raises, desired intent stays recorded and the next
+        # connect's replay delivers it; the caller still sees the error.
+        await ws.send_json(subscription_args)
+
+        # Sent state only if the send rode the still-current socket AND a
+        # racing replay has not already recorded it; otherwise the
+        # replacement's replay owns delivery and the ledger entry.
+        if self.ws is ws and subscription_args not in self._sent_subscriptions:
+            self._sent_subscriptions.append(subscription_args)
         self.last_subsctiption = topic
 
     async def unsubscribe(self, *topics: str | Callable):
