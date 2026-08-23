@@ -72,6 +72,7 @@ after the socket was published, the partial socket is retired (ws + session clos
 - The `retries` constructor parameter is accepted for API compatibility but does not
   retry on the async path. Reconnect pacing belongs to the caller.
 - `is_connected()` no longer reads True after a setup-phase failure.
+- `subscribe()` now raises when it is waiting with no connection and no connect in flight; it previously waited indefinitely.
 
 **Reason for Change:** honest contract (basis_fork TASK-29 D4); the retry the
 parameter promised never existed on the async path.

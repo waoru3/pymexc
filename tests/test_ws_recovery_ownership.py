@@ -385,6 +385,71 @@ async def noop_callback(_message):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("manager_class", "subscribe_args"),
+    [
+        (_FuturesWebSocketManager, ("sub.ticker", noop_callback, {"symbol": "BTC_USDT"})),
+        (_SpotWebSocketManager, ("public.deals", noop_callback, [{"symbol": "BTCUSDT"}])),
+    ],
+    ids=("futures", "spot"),
+)
+async def test_subscribe_raises_after_setup_tail_failure_leaves_no_connect(
+    monkeypatch, manager_class, subscribe_args
+):
+    """A second subscriber must not wait forever after D4 retires A's socket."""
+    auth_started = asyncio.Event()
+    fail_auth = asyncio.Event()
+
+    class HappySession:
+        def __init__(self, *args, **kwargs):
+            self.closed = False
+            self.ws = FakeWS()
+
+        async def ws_connect(self, *args, **kwargs):
+            return self.ws
+
+        async def close(self):
+            self.closed = True
+
+    manager = make_manager(manager_class, api_key="k", api_secret="s", proto=False)
+    monkeypatch.setattr(bw, "ClientSession", HappySession)
+
+    async def blocking_auth():
+        auth_started.set()
+        await fail_auth.wait()
+        raise aiohttp.ClientError("auth failed")
+
+    manager._auth = blocking_auth
+    connect_task = subscribe_task = None
+    try:
+        connect_task = asyncio.create_task(manager._connect(SPOT))
+        await asyncio.wait_for(auth_started.wait(), timeout=1)
+        assert manager.is_connected() is True
+        assert manager._setup_complete is False
+        assert manager.attempting_connection is True
+
+        subscribe_task = asyncio.create_task(manager.subscribe(*subscribe_args))
+        await asyncio.sleep(0)
+        fail_auth.set()
+
+        with pytest.raises(aiohttp.ClientError, match="auth failed"):
+            await connect_task
+        assert manager.is_connected() is False
+        assert manager._setup_complete is False
+        assert manager.attempting_connection is False
+        with pytest.raises(RuntimeError) as excinfo:
+            await asyncio.wait_for(subscribe_task, timeout=1)
+        assert manager.ws_name in str(excinfo.value)
+    finally:
+        fail_auth.set()
+        for task in (connect_task, subscribe_task):
+            if task and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (connect_task, subscribe_task) if task), return_exceptions=True)
+        await drain(manager)
+
+
+@pytest.mark.asyncio
 async def test_futures_subscribe_waits_for_setup_complete():
     manager = make_manager(cls=_FuturesWebSocketManager)
     manager.ws = FakeWS()
@@ -402,6 +467,8 @@ async def test_futures_subscribe_waits_for_setup_complete():
     assert manager.ws.sent == [{"method": "sub.ticker", "param": {"symbol": "BTC_USDT"}}]
 
     manager.connected = False
+    # A connect is in flight, so waiting is correct.
+    manager.attempting_connection = True
     subscribe_task = asyncio.create_task(
         manager.subscribe("sub.ticker", noop_callback, {"symbol": "ETH_USDT"})
     )
@@ -436,6 +503,8 @@ async def test_spot_subscribe_waits_for_setup_complete():
     ]
 
     manager.connected = False
+    # A connect is in flight, so waiting is correct.
+    manager.attempting_connection = True
     subscribe_task = asyncio.create_task(
         manager.subscribe("public.deals", noop_callback, [{"symbol": "ETHUSDT"}])
     )

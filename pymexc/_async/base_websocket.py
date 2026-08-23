@@ -537,6 +537,11 @@ class _FuturesWebSocketManager(_AsyncWebSocketManager):
             # Both, not either (TASK-29 D6): `connected` alone admits sends
             # during the setup tail; `_setup_complete` alone stays True while
             # bot recovery retires the socket being replaced.
+            # No connect is in flight. A setup-tail failure retires the socket;
+            # it raises only to `_connect`'s caller, so nothing can satisfy this wait.
+            # Reconnect pacing belongs to that caller (TASK-29 D6 / PR #11 review).
+            if not self.is_connected() and not self.attempting_connection:
+                raise RuntimeError(f"WebSocket {self.ws_name} has no connection in flight")
             await asyncio.sleep(0.1)
 
         # Record intent BEFORE the send await (TASK-29 D6): a replacement
@@ -726,6 +731,11 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
             # Both, not either (TASK-29 D6): `connected` alone admits sends
             # during the setup tail; `_setup_complete` alone stays True while
             # bot recovery retires the socket being replaced.
+            # No connect is in flight. A setup-tail failure retires the socket;
+            # it raises only to `_connect`'s caller, so nothing can satisfy this wait.
+            # Reconnect pacing belongs to that caller (TASK-29 D6 / PR #11 review).
+            if not self.is_connected() and not self.attempting_connection:
+                raise RuntimeError(f"WebSocket {self.ws_name} has no connection in flight")
             await asyncio.sleep(0.1)
 
         # Record intent BEFORE the send await (TASK-29 D6): a replacement
