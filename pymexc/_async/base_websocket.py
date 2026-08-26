@@ -842,7 +842,7 @@ class _SpotWebSocketManager(_AsyncWebSocketManager):
 
 
 class _SpotWebSocket(_SpotWebSocketManager):
-    listenKey: str
+    listenKey: Optional[str]
     http: "HTTP"
 
     def __init__(
