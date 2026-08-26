@@ -35,7 +35,7 @@ while True:
 import asyncio
 import logging
 from asyncio import AbstractEventLoop
-from typing import Callable, List, Literal, Optional, Union
+from typing import Awaitable, Callable, List, Literal, Optional, Union
 import warnings
 from enum import Enum
 
@@ -2071,7 +2071,7 @@ class WebSocket(_SpotWebSocket):
     #
     # <=================================================================>
 
-    async def deals_stream(self, callback: Callable[..., None], symbol: Union[str, List[str]], speed: str = "100ms"):
+    async def deals_stream(self, callback: Callable[..., Awaitable[None]], symbol: Union[str, List[str]], speed: str = "100ms"):
         """
         ### Trade Streams
         The Trade Streams push raw trade information; each trade has a unique buyer and seller.
@@ -2079,7 +2079,7 @@ class WebSocket(_SpotWebSocket):
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#trade-streams
 
         :param callback: the callback function
-        :type callback: Callable[..., None]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: Union[str,List[str]]
         :param speed: aggregated stream speed. Possible values '100ms' or '10ms'
@@ -2095,7 +2095,7 @@ class WebSocket(_SpotWebSocket):
         topic = "public.aggre.deals"
         await self._ws_subscribe(topic, callback, params, speed)
 
-    async def kline_stream(self, callback: Callable[..., None], symbol: str, interval: int | str):
+    async def kline_stream(self, callback: Callable[..., Awaitable[None]], symbol: str, interval: int | str):
         """
         ### Kline Streams
         The Kline/Candlestick Stream push updates to the current klines/candlestick every second.
@@ -2103,7 +2103,7 @@ class WebSocket(_SpotWebSocket):
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#kline-streams
 
         :param callback: the callback function
-        :type callback: Callable[..., None]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
         :param interval: the interval of the kline (e.g. 1, 5, 15, 30, 60, 4h, 1d)
@@ -2130,7 +2130,7 @@ class WebSocket(_SpotWebSocket):
         topic = "public.kline"
         await self._ws_subscribe(topic, callback, params)
 
-    async def depth_stream(self, callback: Callable[..., None], symbol: str, speed: str = "100ms"):
+    async def depth_stream(self, callback: Callable[..., Awaitable[None]], symbol: str, speed: str = "100ms"):
         """
         ### Diff.Depth Stream
         If the quantity is 0, it means that the order of the price has been cancel or traded,remove the price level.
@@ -2138,7 +2138,7 @@ class WebSocket(_SpotWebSocket):
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#diff-depth-stream
 
         :param callback: the callback function
-        :type callback: Callable[..., None]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
 
@@ -2148,7 +2148,7 @@ class WebSocket(_SpotWebSocket):
         topic = "public.aggre.depth"
         await self._ws_subscribe(topic, callback, params, speed)
 
-    async def limit_depth_stream(self, callback: Callable[..., None], symbol: str, level: int):
+    async def limit_depth_stream(self, callback: Callable[..., Awaitable[None]], symbol: str, level: int):
         """
         ### Partial Book Depth Streams
         Top bids and asks, Valid are 5, 10, or 20.
@@ -2156,7 +2156,7 @@ class WebSocket(_SpotWebSocket):
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#partial-book-depth-streams
 
         :param callback: the callback function
-        :type callback: Callable[..., None]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
         :param level: the level of the depth. Valid are 5, 10, or 20.
@@ -2168,7 +2168,7 @@ class WebSocket(_SpotWebSocket):
         topic = "public.limit.depth"
         await self._ws_subscribe(topic, callback, params)
 
-    async def book_ticker_stream(self, callback: Callable[..., None], symbol: str, speed: str = "100ms"):
+    async def book_ticker_stream(self, callback: Callable[..., Awaitable[None]], symbol: str, speed: str = "100ms"):
         """
         ### Individual Symbol Book Ticker Streams
         Pushes any update to the best bid or ask's price or quantity in real-time for a specified symbol.
@@ -2176,7 +2176,7 @@ class WebSocket(_SpotWebSocket):
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#partial-book-depth-streams
 
         :param callback: the callback function
-        :type callback: Callable[..., None]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbols: the names of the contracts
         :type symbols: str
 
@@ -2186,7 +2186,7 @@ class WebSocket(_SpotWebSocket):
         topic = "public.aggre.bookTicker"
         await self._ws_subscribe(topic, callback, params, speed)
 
-    async def book_ticker_batch_stream(self, callback: Callable[..., None], symbols: List[str]):
+    async def book_ticker_batch_stream(self, callback: Callable[..., Awaitable[None]], symbols: List[str]):
         """
         ### Individual Symbol Book Ticker Streams (Batch Aggregation)
         This batch aggregation version pushes the best order information for a specified trading pair.
@@ -2194,7 +2194,7 @@ class WebSocket(_SpotWebSocket):
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#individual-symbol-book-ticker-streams-batch-aggregation
 
         :param callback: the callback function
-        :type callback: Callable[..., None]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbols: the names of the contracts
         :type symbols: List[str]
 
@@ -2206,7 +2206,7 @@ class WebSocket(_SpotWebSocket):
 
     async def mini_ticker_stream(
         self,
-        callback: Callable[[dict | ProtoTyping.PublicMiniTickerV3Api], None],
+        callback: Callable[[dict | ProtoTyping.PublicMiniTickerV3Api], Awaitable[None]],
         symbol: str,
         timezone: str = "UTC+8",
     ):
@@ -2217,7 +2217,7 @@ class WebSocket(_SpotWebSocket):
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#miniticker
 
         :param callback: the callback function
-        :type callback: Callable[[dict | ProtoTyping.PublicMiniTickerV3Api], None]
+        :type callback: Callable[[dict | ProtoTyping.PublicMiniTickerV3Api], Awaitable[None]]
         :param symbol: the name of the trading pair
         :type symbol: str
         :param timezone: timezone for the ticker data. Valid values: 24H, UTC-10, UTC-8, UTC-7, UTC-6, UTC-5, UTC-4, UTC-3, UTC+0, UTC+1, UTC+2, UTC+3, UTC+4, UTC+4:30, UTC+5, UTC+5:30, UTC+6, UTC+7, UTC+8 (default), UTC+9, UTC+10, UTC+11, UTC+12, UTC+12:45, UTC+13
@@ -2233,7 +2233,7 @@ class WebSocket(_SpotWebSocket):
 
     async def mini_tickers_stream(
         self,
-        callback: Callable[[dict | ProtoTyping.PublicMiniTickersV3Api], None],
+        callback: Callable[[dict | ProtoTyping.PublicMiniTickersV3Api], Awaitable[None]],
         timezone: str = "UTC+8",
     ):
         """
@@ -2243,7 +2243,7 @@ class WebSocket(_SpotWebSocket):
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#minitickers
 
         :param callback: the callback function
-        :type callback: Callable[[dict | ProtoTyping.PublicMiniTickersV3Api], None]
+        :type callback: Callable[[dict | ProtoTyping.PublicMiniTickersV3Api], Awaitable[None]]
         :param timezone: timezone for the ticker data. Valid values: 24H, UTC-10, UTC-8, UTC-7, UTC-6, UTC-5, UTC-4, UTC-3, UTC+0, UTC+1, UTC+2, UTC+3, UTC+4, UTC+4:30, UTC+5, UTC+5:30, UTC+6, UTC+7, UTC+8 (default), UTC+9, UTC+10, UTC+11, UTC+12, UTC+12:45, UTC+13
         :type timezone: str
 
@@ -2275,7 +2275,7 @@ class WebSocket(_SpotWebSocket):
             logger.debug(f"Created listenKey for private streams: {self.listenKey}")
             self.endpoint = f"{SPOT_WS}?listenKey={self.listenKey}"
 
-    async def account_update(self, callback: Callable[..., None]):
+    async def account_update(self, callback: Callable[..., Awaitable[None]]):
         """
         ### Spot Account Update
         The server will push an update of the account assets when the account balance changes.
@@ -2283,7 +2283,7 @@ class WebSocket(_SpotWebSocket):
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#websocket-user-data-streams
 
         :param callback: the callback function
-        :type callback: Callable[..., None]
+        :type callback: Callable[..., Awaitable[None]]
 
         :return: None
         """
@@ -2292,14 +2292,14 @@ class WebSocket(_SpotWebSocket):
         topic = "private.account"
         await self._ws_subscribe(topic, callback, params)
 
-    async def account_deals(self, callback: Callable[..., None]):
+    async def account_deals(self, callback: Callable[..., Awaitable[None]]):
         """
         ### Spot Account Deals
 
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#spot-account-deals
 
         :param callback: the callback function
-        :type callback: Callable[..., None]
+        :type callback: Callable[..., Awaitable[None]]
 
         :return: None
         """
@@ -2308,14 +2308,14 @@ class WebSocket(_SpotWebSocket):
         topic = "private.deals"
         await self._ws_subscribe(topic, callback, params)
 
-    async def account_orders(self, callback: Callable[..., None]):
+    async def account_orders(self, callback: Callable[..., Awaitable[None]]):
         """
         ### Spot Account Orders
 
         https://mexcdevelop.github.io/apidocs/spot_v3_en/#spot-account-orders
 
         :param callback: the callback function
-        :type callback: Callable[..., None]
+        :type callback: Callable[..., Awaitable[None]]
 
         :return: None
         """

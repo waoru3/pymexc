@@ -56,7 +56,7 @@ class HTTP(_FuturesHTTP):
     #
     # <=================================================================>
 
-    def ping(self) -> dict:
+    def ping(self) -> Awaitable[dict]:
         """
         ### Get the server time
 
@@ -66,7 +66,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", "api/v1/contract/ping")
 
-    def detail(self, symbol: Optional[str] = None) -> dict:
+    def detail(self, symbol: Optional[str] = None) -> Awaitable[dict]:
         """
         ### Get the contract information
 
@@ -82,7 +82,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", "api/v1/contract/detail", params=dict(symbol=symbol))
 
-    def support_currencies(self) -> dict:
+    def support_currencies(self) -> Awaitable[dict]:
         """
         ### Get the transferable currencies
 
@@ -95,7 +95,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", "api/v1/contract/support_currencies")
 
-    def get_depth(self, symbol: str, limit: Optional[int] = None) -> dict:
+    def get_depth(self, symbol: str, limit: Optional[int] = None) -> Awaitable[dict]:
         """
         ### Get the contract's depth information
 
@@ -114,7 +114,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", f"api/v1/contract/depth/{symbol}", params=dict(limit=limit))
 
-    def depth_commits(self, symbol: str, limit: int) -> dict:
+    def depth_commits(self, symbol: str, limit: int) -> Awaitable[dict]:
         """
         ### Get a snapshot of the latest N depth information of the contract
 
@@ -133,7 +133,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", f"api/v1/contract/depth_commits/{symbol}/{limit}")
 
-    def index_price(self, symbol: str) -> dict:
+    def index_price(self, symbol: str) -> Awaitable[dict]:
         """
         ### Get contract index price
 
@@ -149,7 +149,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", f"api/v1/contract/index_price/{symbol}")
 
-    def fair_price(self, symbol: str) -> dict:
+    def fair_price(self, symbol: str) -> Awaitable[dict]:
         """
         ### Get contract fair price
 
@@ -165,7 +165,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", f"api/v1/contract/fair_price/{symbol}")
 
-    def funding_rate(self, symbol: str) -> dict:
+    def funding_rate(self, symbol: str) -> Awaitable[dict]:
         """
         ### Get contract funding rate
 
@@ -200,7 +200,7 @@ class HTTP(_FuturesHTTP):
         ] = None,
         start: Optional[int] = None,
         end: Optional[int] = None,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### K-line data
 
@@ -245,7 +245,7 @@ class HTTP(_FuturesHTTP):
         ] = "Min1",
         start: Optional[int] = None,
         end: Optional[int] = None,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Get K-line data of the index price
 
@@ -290,7 +290,7 @@ class HTTP(_FuturesHTTP):
         ] = "Min1",
         start: Optional[int] = None,
         end: Optional[int] = None,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Get K-line data of the index price
 
@@ -316,7 +316,7 @@ class HTTP(_FuturesHTTP):
             params=dict(symbol=symbol, interval=interval, start=start, end=end),
         )
 
-    def deals(self, symbol: str, limit: Optional[int] = 100) -> dict:
+    def deals(self, symbol: str, limit: Optional[int] = 100) -> Awaitable[dict]:
         """
         ### Get contract transaction data
 
@@ -338,7 +338,7 @@ class HTTP(_FuturesHTTP):
             params=dict(symbol=symbol, limit=limit),
         )
 
-    def ticker(self, symbol: Optional[str] = None) -> dict:
+    def ticker(self, symbol: Optional[str] = None) -> Awaitable[dict]:
         """
         ### Get contract trend data
 
@@ -354,7 +354,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", "api/v1/contract/ticker", params=dict(symbol=symbol))
 
-    def risk_reverse(self) -> dict:
+    def risk_reverse(self) -> Awaitable[dict]:
         """
         ### Get all contract risk fund balance
 
@@ -367,7 +367,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", "api/v1/contract/risk_reverse")
 
-    def risk_reverse_history(self, symbol: str, page_num: Optional[int] = 1, page_size: Optional[int] = 20) -> dict:
+    def risk_reverse_history(self, symbol: str, page_num: Optional[int] = 1, page_size: Optional[int] = 20) -> Awaitable[dict]:
         """
         ### Get contract risk fund balance history
 
@@ -390,7 +390,7 @@ class HTTP(_FuturesHTTP):
             params=dict(symbol=symbol, page_num=page_num, page_size=page_size),
         )
 
-    def funding_rate_history(self, symbol: str, page_num: Optional[int] = 1, page_size: Optional[int] = 20) -> dict:
+    def funding_rate_history(self, symbol: str, page_num: Optional[int] = 1, page_size: Optional[int] = 20) -> Awaitable[dict]:
         """
         ### Get contract funding rate history
 
@@ -419,7 +419,7 @@ class HTTP(_FuturesHTTP):
     #
     # <=================================================================>
 
-    def assets(self) -> dict:
+    def assets(self) -> Awaitable[dict]:
         """
         ### Get all informations of user's asset
         #### Required permissions: Trade reading permission
@@ -433,7 +433,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", "api/v1/private/account/assets")
 
-    def asset(self, currency: str) -> dict:
+    def asset(self, currency: str) -> Awaitable[dict]:
         """
         ### Get the user's single currency asset information
         #### Required permissions: Account reading permission
@@ -454,7 +454,7 @@ class HTTP(_FuturesHTTP):
         type: Literal["IN", "OUT"] = None,
         page_num: Optional[int] = 1,
         page_size: Optional[int] = 20,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Get the user's asset transfer records
         #### Required permissions: Account reading permission
@@ -495,7 +495,7 @@ class HTTP(_FuturesHTTP):
         type: Optional[int] = None,
         page_num: Optional[int] = 1,
         page_size: Optional[int] = 20,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Get the user's history position information
         #### Required permissions: Trade reading permissions
@@ -522,7 +522,7 @@ class HTTP(_FuturesHTTP):
             params=dict(symbol=symbol, type=type, page_num=page_num, page_size=page_size),
         )
 
-    def open_positions(self, symbol: Optional[str] = None) -> dict:
+    def open_positions(self, symbol: Optional[str] = None) -> Awaitable[dict]:
         """
         ### Get the user's current holding position
         #### Required permissions: Trade reading permission
@@ -545,7 +545,7 @@ class HTTP(_FuturesHTTP):
         position_id: Optional[int] = None,
         page_num: Optional[int] = 1,
         page_size: Optional[int] = 20,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Get details of user's funding rate
         #### Required permissions: Trade reading permission
@@ -583,7 +583,7 @@ class HTTP(_FuturesHTTP):
         symbol: Optional[str] = None,
         page_num: Optional[int] = 1,
         page_size: Optional[int] = 20,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Get the user's current pending order
         #### Required permissions: Trade reading permission
@@ -618,7 +618,7 @@ class HTTP(_FuturesHTTP):
         side: Optional[int] = None,
         page_num: Optional[int] = 1,
         page_size: Optional[int] = 20,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Get all of the user's historical orders
         #### Required permissions: Trade reading permission
@@ -662,7 +662,7 @@ class HTTP(_FuturesHTTP):
             ),
         )
 
-    def get_order_external(self, symbol: str, external_oid: int) -> dict:
+    def get_order_external(self, symbol: str, external_oid: int) -> Awaitable[dict]:
         """
         ### Query the order based on the external number
         #### Required permissions: Trade reading permission
@@ -682,7 +682,7 @@ class HTTP(_FuturesHTTP):
 
         return self.call("GET", f"api/v1/private/order/external/{symbol}/{external_oid}")
 
-    def get_order(self, order_id: int) -> dict:
+    def get_order(self, order_id: int) -> Awaitable[dict]:
         """
         ### Query the order based on the order number
         #### Required permissions: Trade reading permission
@@ -699,7 +699,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", f"api/v1/private/order/get/{order_id}")
 
-    def batch_query(self, order_ids: List[int]) -> dict:
+    def batch_query(self, order_ids: List[int]) -> Awaitable[dict]:
         """
         ### Query the order in bulk based on the order number
         #### Required permissions: Trade reading permission
@@ -720,7 +720,7 @@ class HTTP(_FuturesHTTP):
             params=dict(order_ids=",".join(order_ids) if isinstance(order_ids, list) else order_ids),
         )
 
-    def deal_details(self, order_id: int) -> dict:
+    def deal_details(self, order_id: int) -> Awaitable[dict]:
         """
         ### Get order transaction details based on the order ID
         #### Required permissions: Trade reading permission
@@ -744,7 +744,7 @@ class HTTP(_FuturesHTTP):
         end_time: Optional[int] = None,
         page_num: Optional[int] = 1,
         page_size: Optional[int] = 20,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Get all transaction details of the user's order
         #### Required permissions: Trade reading permission
@@ -787,7 +787,7 @@ class HTTP(_FuturesHTTP):
         end_time: Optional[int] = None,
         page_num: int = 1,
         page_size: int = 20,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Gets the trigger order list
         #### Required permissions: Trade reading permission
@@ -833,7 +833,7 @@ class HTTP(_FuturesHTTP):
         end_time: Optional[int] = None,
         page_num: int = 1,
         page_size: int = 20,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Get the Stop-Limit order list
         Rate limit: 20 times / 2 seconds
@@ -870,7 +870,7 @@ class HTTP(_FuturesHTTP):
             ),
         )
 
-    def risk_limit(self, symbol: Optional[str] = None) -> dict:
+    def risk_limit(self, symbol: Optional[str] = None) -> Awaitable[dict]:
         """
         ### Get risk limits
         #### Required permissions: Trade reading permission
@@ -887,7 +887,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", "api/v1/private/account/risk_limit", params=dict(symbol=symbol))
 
-    def tiered_fee_rate(self, symbol: Optional[str] = None) -> dict:
+    def tiered_fee_rate(self, symbol: Optional[str] = None) -> Awaitable[dict]:
         """
         ### Gets the user's current trading fee rate
         #### Required permissions: Trade reading permission
@@ -905,7 +905,7 @@ class HTTP(_FuturesHTTP):
 
         return self.call("GET", "api/v1/private/account/tiered_fee_rate", params=dict(symbol=symbol))
 
-    def change_margin(self, position_id: int, amount: int, type: str) -> dict:
+    def change_margin(self, position_id: int, amount: int, type: str) -> Awaitable[dict]:
         """
         ### Increase or decrease margin
         #### Required permissions: Trading permission
@@ -930,7 +930,7 @@ class HTTP(_FuturesHTTP):
             params=dict(positionId=position_id, amount=amount, type=type),
         )
 
-    def get_leverage(self, symbol: str) -> dict:
+    def get_leverage(self, symbol: str) -> Awaitable[dict]:
         """
         ### Get leverage
         #### Required permissions: Trading permission
@@ -955,7 +955,7 @@ class HTTP(_FuturesHTTP):
         open_type: Optional[int] = None,
         symbol: Optional[str] = None,
         position_type: Optional[int] = None,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Switch leverage
         #### Required permissions: Trading permission
@@ -991,7 +991,7 @@ class HTTP(_FuturesHTTP):
             ),
         )
 
-    def get_position_mode(self) -> dict:
+    def get_position_mode(self) -> Awaitable[dict]:
         """
         ### Get position mode
         #### Required permissions: Trading permission
@@ -1005,7 +1005,7 @@ class HTTP(_FuturesHTTP):
         """
         return self.call("GET", "api/v1/private/position/position_mode")
 
-    def change_position_mode(self, position_mode: int) -> dict:
+    def change_position_mode(self, position_mode: int) -> Awaitable[dict]:
         """
         ### Change position mode
         #### Required permissions: Trading permission
@@ -1041,7 +1041,7 @@ class HTTP(_FuturesHTTP):
         take_profit_price: Optional[float] = None,
         position_mode: Optional[int] = None,
         reduce_only: Optional[bool] = False,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Order (Under maintenance)
         #### Required permissions: Trading permission
@@ -1112,7 +1112,7 @@ class HTTP(_FuturesHTTP):
         external_oid: Optional[str] = None,
         stop_loss_price: Optional[float] = None,
         take_profit_price: Optional[float] = None,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Bulk order (Under maintenance)
         #### Required permissions: Trading permission
@@ -1164,7 +1164,7 @@ class HTTP(_FuturesHTTP):
             ),
         )
 
-    def cancel_order(self, order_ids: Union[List[int], int]) -> dict:
+    def cancel_order(self, order_ids: Union[List[int], int]) -> Awaitable[dict]:
         """
         ### Cancel the order (Under maintenance)
         #### Required permissions: Trading permission
@@ -1186,7 +1186,7 @@ class HTTP(_FuturesHTTP):
             json=order_ids if isinstance(order_ids, list) else [order_ids],
         )
 
-    def cancel_order_with_external(self, symbol: str, external_oid: str) -> dict:
+    def cancel_order_with_external(self, symbol: str, external_oid: str) -> Awaitable[dict]:
         """
         ### Cancel the order according to the external order ID (Under maintenance)
 
@@ -1209,7 +1209,7 @@ class HTTP(_FuturesHTTP):
             params=dict(symbol=symbol, externalOid=external_oid),
         )
 
-    def cancel_all(self, symbol: Optional[str] = None) -> dict:
+    def cancel_all(self, symbol: Optional[str] = None) -> Awaitable[dict]:
         """
         ### Cancel all orders under a contract (Under maintenance)
 
@@ -1228,7 +1228,7 @@ class HTTP(_FuturesHTTP):
 
         return self.call("POST", "api/v1/private/order/cancel_all", params=dict(symbol=symbol))
 
-    def change_risk_level(self) -> dict:
+    def change_risk_level(self) -> Awaitable[dict]:
         """
         ### Switch the risk level
 
@@ -1253,7 +1253,7 @@ class HTTP(_FuturesHTTP):
         trend: int,
         price: Optional[float] = None,
         leverage: Optional[int] = None,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Trigger order (Under maintenance)
 
@@ -1304,7 +1304,7 @@ class HTTP(_FuturesHTTP):
             ),
         )
 
-    def cancel_trigger_order(self, order_id: int) -> dict:
+    def cancel_trigger_order(self, order_id: int) -> Awaitable[dict]:
         """
         ### Cancel the trigger order (Under maintenance)
 
@@ -1323,7 +1323,7 @@ class HTTP(_FuturesHTTP):
 
         return self.call("POST", "api/v1/private/planorder/cancel", params=dict(order_id=order_id))
 
-    def cancel_all_trigger_orders(self, symbol: Optional[str] = None) -> dict:
+    def cancel_all_trigger_orders(self, symbol: Optional[str] = None) -> Awaitable[dict]:
         """
         ### Cancel all trigger orders (Under maintenance)
 
@@ -1338,7 +1338,7 @@ class HTTP(_FuturesHTTP):
 
         return self.call("POST", "api/v1/private/planorder/cancel_all", params=dict(symbol=symbol))
 
-    def cancel_stop_order(self, order_id: int) -> dict:
+    def cancel_stop_order(self, order_id: int) -> Awaitable[dict]:
         """
         ### Cancel the Stop-Limit trigger order (Under maintenance)
 
@@ -1353,7 +1353,7 @@ class HTTP(_FuturesHTTP):
 
         return self.call("POST", "api/v1/private/stoporder/cancel", params=dict(order_id=order_id))
 
-    def cancel_all_stop_order(self, position_id: Optional[int] = None, symbol: Optional[str] = None) -> dict:
+    def cancel_all_stop_order(self, position_id: Optional[int] = None, symbol: Optional[str] = None) -> Awaitable[dict]:
         """
         ### Cancel all Stop-Limit price trigger orders (Under maintenance)
 
@@ -1379,7 +1379,7 @@ class HTTP(_FuturesHTTP):
         order_id: int,
         stop_loss_price: Optional[float] = None,
         take_profit_price: Optional[float] = None,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Switch Stop-Limit limited order price
 
@@ -1411,7 +1411,7 @@ class HTTP(_FuturesHTTP):
         stop_plan_order_id: int,
         stop_loss_price: Optional[float] = None,
         take_profit_price: Optional[float] = None,
-    ) -> dict:
+    ) -> Awaitable[dict]:
         """
         ### Switch the Stop-Limit price of trigger orders
 
@@ -1445,7 +1445,7 @@ class WebSocket(_FuturesWebSocket):
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         loop: Optional[AbstractEventLoop] = None,
-        personal_callback: Optional[Awaitable[Callable[..., None]]] = None,
+        personal_callback: Optional[Callable[..., Awaitable[None]]] = None,
         ping_interval: Optional[int] = 20,
         ping_timeout: Optional[int] = None,
         retries: Optional[int] = 10,
@@ -1488,7 +1488,7 @@ class WebSocket(_FuturesWebSocket):
 
         return await super().unsubscribe(method)
 
-    async def tickers_stream(self, callback: Awaitable[Callable[..., None]]):
+    async def tickers_stream(self, callback: Callable[..., Awaitable[None]]):
         """
         ### Tickers
         Get the latest transaction price, buy-price, sell-price and 24 transaction volume of all the perpetual contracts on the platform without login.
@@ -1497,7 +1497,7 @@ class WebSocket(_FuturesWebSocket):
         https://mexcdevelop.github.io/apidocs/contract_v1_en/#public-channels
 
         :param callback: the callback function
-        :type callback: Awaitable[Callable[..., None]]
+        :type callback: Callable[..., Awaitable[None]]
 
         :return: None
         """
@@ -1505,7 +1505,7 @@ class WebSocket(_FuturesWebSocket):
         topic = "sub.tickers"
         await self._ws_subscribe(topic, callback, params)
 
-    async def ticker_stream(self, callback: Awaitable[Callable[..., None]], symbol: str):
+    async def ticker_stream(self, callback: Callable[..., Awaitable[None]], symbol: str):
         """
         ### Ticker
         Get the latest transaction price, buy price, sell price and 24 transaction volume of a contract,
@@ -1514,7 +1514,7 @@ class WebSocket(_FuturesWebSocket):
         https://mexcdevelop.github.io/apidocs/contract_v1_en/#public-channels
 
         :param callback: the callback function
-        :type callback: Awaitable[Callable[..., None]]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
 
@@ -1528,7 +1528,7 @@ class WebSocket(_FuturesWebSocket):
         topic = "sub.ticker"
         await self._ws_subscribe(topic, callback, params)
 
-    async def deal_stream(self, callback: Awaitable[Callable[..., None]], symbol: str):
+    async def deal_stream(self, callback: Callable[..., Awaitable[None]], symbol: str):
         """
         ### Transaction
         Access to the latest data without login, and keep updating.
@@ -1536,7 +1536,7 @@ class WebSocket(_FuturesWebSocket):
         https://mexcdevelop.github.io/apidocs/contract_v1_en/#public-channels
 
         :param callback: the callback function
-        :type callback: Awaitable[Callable[..., None]]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
 
@@ -1550,7 +1550,7 @@ class WebSocket(_FuturesWebSocket):
         topic = "sub.deal"
         await self._ws_subscribe(topic, callback, params)
 
-    async def depth_stream(self, callback: Awaitable[Callable[..., None]], symbol: str):
+    async def depth_stream(self, callback: Callable[..., Awaitable[None]], symbol: str):
         """
         ### Depth
 
@@ -1559,7 +1559,7 @@ class WebSocket(_FuturesWebSocket):
         https://mexcdevelop.github.io/apidocs/contract_v1_en/#public-channels
 
         :param callback: the callback function
-        :type callback: Awaitable[Callable[..., None]]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
 
@@ -1573,14 +1573,14 @@ class WebSocket(_FuturesWebSocket):
         topic = "sub.depth"
         await self._ws_subscribe(topic, callback, params)
 
-    async def depth_full_stream(self, callback: Awaitable[Callable[..., None]], symbol: str, limit: int = 20):
+    async def depth_full_stream(self, callback: Callable[..., Awaitable[None]], symbol: str, limit: int = 20):
         """
         ### Depth full
 
         https://mexcdevelop.github.io/apidocs/contract_v1_en/#public-channels
 
         :param callback: the callback function
-        :type callback: Awaitable[Callable[..., None]]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
         :param limit: Limit could be 5, 10 or 20, default 20 without define., only subscribe to the full amount of one gear
@@ -1598,7 +1598,7 @@ class WebSocket(_FuturesWebSocket):
 
     async def kline_stream(
         self,
-        callback: Awaitable[Callable[..., None]],
+        callback: Callable[..., Awaitable[None]],
         symbol: str,
         interval: Literal["Min1", "Min5", "Min15", "Min60", "Hour1", "Hour4", "Day1", "Week1"] = "Min1",
     ):
@@ -1609,7 +1609,7 @@ class WebSocket(_FuturesWebSocket):
         https://mexcdevelop.github.io/apidocs/contract_v1_en/#public-channels
 
         :param callback: the callback function
-        :type callback: Awaitable[Callable[..., None]]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
         :param interval: Min1, Min5, Min15, Min30, Min60, Hour4, Hour8, Day1, Week1, Month1
@@ -1625,7 +1625,7 @@ class WebSocket(_FuturesWebSocket):
         topic = "sub.kline"
         await self._ws_subscribe(topic, callback, params)
 
-    async def funding_rate_stream(self, callback: Awaitable[Callable[..., None]], symbol: str):
+    async def funding_rate_stream(self, callback: Callable[..., Awaitable[None]], symbol: str):
         """
         ### Funding rate
         Get the contract funding rate, and keep updating.
@@ -1633,7 +1633,7 @@ class WebSocket(_FuturesWebSocket):
         https://mexcdevelop.github.io/apidocs/contract_v1_en/#public-channels
 
         :param callback: the callback function
-        :type callback: Awaitable[Callable[..., None]]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
 
@@ -1647,7 +1647,7 @@ class WebSocket(_FuturesWebSocket):
         topic = "sub.funding.rate"
         await self._ws_subscribe(topic, callback, params)
 
-    async def index_price_stream(self, callback: Awaitable[Callable[..., None]], symbol: str):
+    async def index_price_stream(self, callback: Callable[..., Awaitable[None]], symbol: str):
         """
         ### Index price
         Get the index price, and will keep updating if there is any changes.
@@ -1655,7 +1655,7 @@ class WebSocket(_FuturesWebSocket):
         https://mexcdevelop.github.io/apidocs/contract_v1_en/#public-channels
 
         :param callback: the callback function
-        :type callback: Awaitable[Callable[..., None]]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
 
@@ -1669,14 +1669,14 @@ class WebSocket(_FuturesWebSocket):
         topic = "sub.index.price"
         await self._ws_subscribe(topic, callback, params)
 
-    async def fair_price_stream(self, callback: Awaitable[Callable[..., None]], symbol: str):
+    async def fair_price_stream(self, callback: Callable[..., Awaitable[None]], symbol: str):
         """
         ### Fair price
 
         https://mexcdevelop.github.io/apidocs/contract_v1_en/#public-channels
 
         :param callback: the callback function
-        :type callback: Awaitable[Callable[..., None]]
+        :type callback: Callable[..., Awaitable[None]]
         :param symbol: the name of the contract
         :type symbol: str
 
@@ -1696,7 +1696,7 @@ class WebSocket(_FuturesWebSocket):
     #
     # <=================================================================>
 
-    async def filter_stream(self, callback: Callable, params: Dict[str, List[dict]] = {"filters": []}):
+    async def filter_stream(self, callback: Callable[..., Awaitable[None]], params: Dict[str, List[dict]] = {"filters": []}):
         """
         ## Filter personal data about account
         Provide `{"filters":[]}` as params for subscribe to all info
@@ -1713,7 +1713,7 @@ class WebSocket(_FuturesWebSocket):
         # set callback for provided filters
         self._set_personal_callback(callback, topics)
 
-    async def personal_stream(self, callback: Awaitable[Callable]):
+    async def personal_stream(self, callback: Callable[..., Awaitable[None]]):
         await self.filter_stream(callback, params={"filters": []})
         # set callback for all filters
         self._set_personal_callback(callback, FUTURES_PERSONAL_TOPICS)
