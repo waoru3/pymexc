@@ -120,8 +120,11 @@ class _SpotHTTP(MexcSDK):
         response = await self.session.request(method, f"{self.base_url}{router}", params=params, *args, **kwargs)
 
         if not response.ok:
-            print(response.json())
-            raise MexcAPIError(f"(code={response.json()['code']}): {response.json()['msg']}")
+            try:
+                error = response.json()
+            except Exception:
+                raise MexcAPIError(f"(HTTP {response.status_code}): {response.text[:200]}")
+            raise MexcAPIError(f"(code={error.get('code')}): {error.get('message') or error.get('msg')}")
 
         return response.json()
 
