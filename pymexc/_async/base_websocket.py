@@ -3,6 +3,7 @@ import json
 import logging
 import time
 import warnings
+from collections import Counter
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Union
 
 import aiohttp
@@ -19,6 +20,9 @@ if TYPE_CHECKING:
     from .spot import HTTP
 
 logger = logging.getLogger(__name__)
+
+# Seconds between two "frames received" log lines of one socket.
+FRAME_COUNT_LOG_INTERVAL = 600
 
 
 class _AsyncWebSocketManager(_WebSocketManager):
@@ -88,6 +92,13 @@ class _AsyncWebSocketManager(_WebSocketManager):
         # Sticky shutdown latch (close_all/__aexit__), unlike `exited` which the sync
         # base sets on every error. Only __aenter__ reopens.
         self._closing = False
+        # Frames received over this client's lifetime, by the channel the exchange
+        # named. Taken ahead of topic routing: a subscribed channel that reads 0
+        # here was never delivered, one that counts up and still has no handler
+        # output was lost after it (basis_fork TASK-438: the spot account channel
+        # stayed silent for whole runs and nothing recorded what had arrived).
+        self.frame_counts: Counter = Counter()
+        self._frame_counts_logged_at = time.monotonic()
 
         if ping_timeout:
             warnings.warn(
@@ -159,7 +170,23 @@ class _AsyncWebSocketManager(_WebSocketManager):
         Parse incoming messages.
         """
         _message = super()._on_message(message, parse_only=True)
+        self._count_frame(_message)
         await self.callback(_message)
+
+    def _count_frame(self, message):
+        if isinstance(message, dict):
+            # Spot acks and pongs carry no channel and share one key.
+            key = message.get("channel") or "json"
+        else:
+            # Drops the per-symbol suffix of the public spot channels.
+            key = message.channel.split(".pb@")[0]
+        self.frame_counts[key] += 1
+
+        # Logged from here, so a socket that delivers nothing at all logs nothing.
+        now = time.monotonic()
+        if now - self._frame_counts_logged_at >= FRAME_COUNT_LOG_INTERVAL:
+            self._frame_counts_logged_at = now
+            logger.info(f"WebSocket {self.ws_name} frames received: {dict(self.frame_counts)}")
 
     def is_connected(self):
         return self.connected
